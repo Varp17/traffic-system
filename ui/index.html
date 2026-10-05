@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Traffic Monitoring Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="navbar">
+    <h1 class="logo">🛣️ Traffic Hub</h1>
+    <nav>
+      <ul>
+        <li><a href="index.html" class="active">Overview</a></li>
+        <li><a href="detection.html">Detections</a></li>
+        <li><a href="violations.html">Violations</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="summary-card glass">
+      <h2>Live Intersections</h2>
+      <div class="grid">
+        <div class="intersection" id="intersection-1">
+          <h3>Intersection A</h3>
+          <p class="status">🟢 Normal</p>
+        </div>
+        <div class="intersection" id="intersection-2">
+          <h3>Intersection B</h3>
+          <p class="status">🟡 Congestion</p>
+        </div>
+        <div class="intersection" id="intersection-3">
+          <h3>Intersection C</h3>
+          <p class="status">🔴 Accident</p>
+        </div>
+        <div class="intersection" id="intersection-4">
+          <h3>Intersection D</h3>
+          <p class="status">🟢 Normal</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="stats-card glass">
+      <h2>Key Metrics (last 5 min)</h2>
+      <ul class="metrics">
+        <li>🚑 Ambulances Detected: <span id="ambulance-count">0</span></li>
+        <li>🚧 Violations: <span id="violation-count">0</span></li>
+        <li>👥 Crowded Pedestrian Zones: <span id="crowd-count">0</span></li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

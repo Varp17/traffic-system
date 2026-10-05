@@ -1,89 +1,237 @@
-export default function SignalPanel({ signals, laneStats }) {
+import { useState } from 'react';
+
+export default function SignalPanel({ signals = {}, laneStats = {}, audioSiren = {} }) {
     const data = signals?.signals || {};
     const lanes = ['North', 'South', 'East', 'West'];
+    const [overrideStatus, setOverrideStatus] = useState('');
+
+    const websterCo = signals?.webster_cycle_length || 60;
+    const flowRatio = signals?.critical_flow_ratio || 0.45;
+    const isEmergency = signals?.emergency_active || false;
+    const emergencyLane = signals?.emergency_lane;
+    const emergencySource = signals?.emergency_source || 'visual';
+
+    const handleOverride = async (lane) => {
+        try {
+            setOverrideStatus(`Overriding ${lane}...`);
+            const res = await fetch('/api/override-signal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ lane, duration: 25.0 })
+            });
+            await res.json();
+            setOverrideStatus(`Overridden: ${lane} (25s)`);
+            setTimeout(() => setOverrideStatus(''), 3000);
+        } catch (e) {
+            setOverrideStatus(`Override error: ${e.message}`);
+        }
+    };
+
+    const handleClearEmergency = async () => {
+        try {
+            await fetch('/api/clear-emergency', { method: 'POST' });
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
     return (
-        <div className="glass-panel" style={{ padding: '16px' }}>
-            <div className="section-title">
-                <div className="section-dot" style={{ background: 'var(--green)' }} />
-                Signal Control
+        <div className={`glass-panel ${isEmergency ? 'siren-active-border' : ''}`} style={{ padding: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div className="section-title" style={{ margin: 0 }}>
+                    <div className="section-dot" style={{ background: isEmergency ? 'var(--red)' : 'var(--green)' }} />
+                    Webster ATSC Signal Core
+                </div>
+                <div style={{
+                    fontSize: '11px',
+                    padding: '3px 8px',
+                    borderRadius: '6px',
+                    background: 'rgba(56, 189, 248, 0.12)',
+                    color: '#38bdf8',
+                    fontWeight: '700',
+                    border: '1px solid rgba(56, 189, 248, 0.3)'
+                }}>
+                    Cₒ: {websterCo}s &bull; Y: {flowRatio}
+                </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
-                {lanes.map((lane, index) => {
-                    const s = data[lane] || { state: 'red', time_left: 0 };
-                    const stats = laneStats?.[lane] || { vehicle_count: 0 };
+            {/* Webster Analytical Formula Badge */}
+            <div style={{
+                marginTop: '10px',
+                padding: '8px 10px',
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '8px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '11px'
+            }}>
+                <span className="mono" style={{ color: 'var(--text-muted)' }}>
+                    Cₒ = (1.5L + 5) / (1 - Y)
+                </span>
+                <span style={{ color: 'var(--green)', fontWeight: '700' }}>
+                    Optimum Delay Minimization
+                </span>
+            </div>
 
-                    let stColor = 'var(--muted)';
-                    let maxTime = 5;
+            {/* Emergency / Siren Banner */}
+            {isEmergency && (
+                <div style={{
+                    marginTop: '10px',
+                    background: 'rgba(244, 63, 94, 0.18)',
+                    border: '1px solid var(--red)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    boxShadow: '0 0 16px rgba(244, 63, 94, 0.3)'
+                }}>
+                    <span style={{ fontSize: '11px', fontWeight: '800', color: '#f43f5e' }}>
+                        🚑 PRIORITY CORRIDOR: {emergencyLane} ({emergencySource.toUpperCase()})
+                    </span>
+                    <button
+                        onClick={handleClearEmergency}
+                        style={{
+                            background: '#f43f5e',
+                            color: '#fff',
+                            border: 'none',
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            cursor: 'pointer'
+                        }}>
+                        Clear
+                    </button>
+                </div>
+            )}
 
-                    if (s.state === 'green') {
-                        stColor = 'var(--green)';
-                        maxTime = 45;
-                    } else if (s.state === 'yellow') {
-                        stColor = 'var(--yellow)';
-                        maxTime = 3;
-                    } else {
-                        stColor = 'var(--red)';
-                    }
+            {/* Acoustic Siren Alert Badge */}
+            {audioSiren?.siren_active && !isEmergency && (
+                <div style={{
+                    marginTop: '10px',
+                    background: 'rgba(245, 158, 11, 0.2)',
+                    border: '1px solid var(--yellow)',
+                    borderRadius: '8px',
+                    padding: '6px 10px',
+                    fontSize: '11px',
+                    color: '#f59e0b',
+                    fontWeight: '700'
+                }}>
+                    🔊 ACOUSTIC SIREN DETECTED ({Math.round(audioSiren?.dominant_freq || 0)} Hz) — PREPARING PREEMPTION
+                </div>
+            )}
 
-                    const pct = Math.min(1, Math.max(0, s.time_left / maxTime));
-                    const circ = 2 * Math.PI * 20;
+            {overrideStatus && (
+                <div style={{ marginTop: '8px', fontSize: '11px', color: 'var(--blue)', textAlign: 'center' }}>
+                    {overrideStatus}
+                </div>
+            )}
+
+            {/* 4 Approaches Traffic Signals Grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginTop: '14px' }}>
+                {lanes.map((lane) => {
+                    const info = data[lane] || { state: 'red', time_left: 0 };
+                    const isGreen = info.state === 'green';
+                    const isYellow = info.state === 'yellow';
+                    const isRed = info.state === 'red';
+                    const stats = laneStats[lane] || {};
+                    const waitSec = Math.round(stats.avg_wait_time || 0);
 
                     return (
-                        <div key={lane}>
-                            <div style={{
-                                background: 'rgba(9, 17, 30, 0.8)',
-                                border: `1px solid ${s.state !== 'red' ? stColor : 'var(--border)'}`,
-                                borderRadius: '12px',
-                                padding: '12px',
+                        <div
+                            key={lane}
+                            style={{
+                                background: isGreen ? 'rgba(16, 185, 129, 0.08)' : (isYellow ? 'rgba(245, 158, 11, 0.08)' : 'rgba(15, 23, 42, 0.6)'),
+                                border: isGreen ? '1px solid rgba(16, 185, 129, 0.4)' : (isYellow ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid rgba(255, 255, 255, 0.06)'),
+                                borderRadius: '10px',
+                                padding: '10px 8px',
                                 display: 'flex',
+                                flexDirection: 'column',
                                 alignItems: 'center',
-                                gap: '16px',
-                                boxShadow: s.state !== 'red' ? `0 0 16px ${stColor}20` : 'none',
-                                transition: 'all 0.3s ease'
+                                position: 'relative'
+                            }}
+                        >
+                            <span style={{ fontSize: '11px', fontWeight: '800', color: `var(--${lane.toLowerCase()})` }}>
+                                {lane}
+                            </span>
+
+                            {/* 3-Aspect Traffic Signal Head */}
+                            <div style={{
+                                background: '#050811',
+                                border: '1px solid rgba(255, 255, 255, 0.1)',
+                                borderRadius: '14px',
+                                padding: '6px 5px',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                gap: '5px',
+                                marginTop: '6px'
                             }}>
-                                {/* Traffic Light Bulbs */}
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                    <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: s.state === 'red' ? 'var(--red)' : '#3a1515', opacity: s.state === 'red' ? 1 : 0.3, boxShadow: s.state === 'red' ? '0 0 8px var(--red)' : 'none' }} />
-                                    <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: s.state === 'yellow' ? 'var(--yellow)' : '#3a3215', opacity: s.state === 'yellow' ? 1 : 0.3, boxShadow: s.state === 'yellow' ? '0 0 8px var(--yellow)' : 'none' }} />
-                                    <div style={{ width: '14px', height: '14px', borderRadius: '50%', background: s.state === 'green' ? 'var(--green)' : '#0d2e1a', opacity: s.state === 'green' ? 1 : 0.3, boxShadow: s.state === 'green' ? '0 0 8px var(--green)' : 'none' }} />
-                                </div>
-
-                                {/* Countdown Ring */}
-                                <div style={{ position: 'relative', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                    <svg style={{ position: 'absolute', transform: 'rotate(-90deg)' }} width="48" height="48" viewBox="0 0 48 48">
-                                        <circle cx="24" cy="24" r="20" fill="none" stroke="var(--border)" strokeWidth="4" />
-                                        <circle cx="24" cy="24" r="20" fill="none" stroke={stColor} strokeWidth="4" strokeLinecap="round"
-                                            style={{
-                                                strokeDasharray: circ,
-                                                strokeDashoffset: circ * (1 - pct),
-                                                transition: 'stroke-dashoffset 1s linear, stroke 0.3s'
-                                            }}
-                                        />
-                                    </svg>
-                                    <div style={{ textAlign: 'center', zIndex: 1 }}>
-                                        <div className="mono" style={{ fontSize: '14px', fontWeight: '800', color: stColor, lineHeight: 1 }}>
-                                            {s.time_left > 0 ? Math.ceil(s.time_left) : '--'}
-                                        </div>
-                                        <div style={{ fontSize: '8px', color: 'var(--muted)', marginTop: '2px' }}>sec</div>
-                                    </div>
-                                </div>
-
-                                {/* Info block */}
-                                <div style={{ flex: 1 }}>
-                                    <div style={{ fontSize: '14px', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '1px', color: `var(--${lane.toLowerCase()})` }}>
-                                        {lane}
-                                    </div>
-                                    <div style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', color: stColor }}>
-                                        {s.state} ●
-                                    </div>
-                                    <div className="mono" style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '4px' }}>
-                                        {stats.vehicle_count} vehicles
-                                    </div>
-                                </div>
+                                {/* Red Lamp */}
+                                <div style={{
+                                    width: '14px', height: '14px', borderRadius: '50%',
+                                    background: isRed ? '#f43f5e' : 'rgba(244, 63, 94, 0.15)',
+                                    boxShadow: isRed ? '0 0 10px rgba(244, 63, 94, 0.8)' : 'none',
+                                    transition: 'all 0.3s ease'
+                                }} />
+                                {/* Yellow Lamp */}
+                                <div style={{
+                                    width: '14px', height: '14px', borderRadius: '50%',
+                                    background: isYellow ? '#f59e0b' : 'rgba(245, 158, 11, 0.15)',
+                                    boxShadow: isYellow ? '0 0 10px rgba(245, 158, 11, 0.8)' : 'none',
+                                    transition: 'all 0.3s ease'
+                                }} />
+                                {/* Green Lamp */}
+                                <div className={isGreen ? 'active-green-light' : ''} style={{
+                                    width: '14px', height: '14px', borderRadius: '50%',
+                                    background: isGreen ? '#10b981' : 'rgba(16, 185, 129, 0.15)',
+                                    boxShadow: isGreen ? '0 0 10px rgba(16, 185, 129, 0.8)' : 'none',
+                                    transition: 'all 0.3s ease'
+                                }} />
                             </div>
 
+                            {/* Digital Countdown Timer */}
+                            <div className="mono" style={{
+                                marginTop: '8px',
+                                fontSize: '13px',
+                                fontWeight: '800',
+                                color: isGreen ? 'var(--green)' : (isYellow ? 'var(--yellow)' : 'var(--text-muted)')
+                            }}>
+                                {isGreen || isYellow ? `${Math.ceil(info.time_left || 0)}s` : `${waitSec}s wt`}
+                            </div>
+
+                            {/* Anti-Starvation Indicator */}
+                            {isRed && (
+                                <div style={{
+                                    marginTop: '4px',
+                                    fontSize: '9px',
+                                    color: waitSec > 45 ? '#f43f5e' : 'var(--text-dim)',
+                                    fontWeight: waitSec > 45 ? '800' : '500'
+                                }}>
+                                    {waitSec > 45 ? '⚠️ STARVING' : 'QUEUED'}
+                                </div>
+                            )}
+
+                            {/* Manual Override Trigger */}
+                            <button
+                                onClick={() => handleOverride(lane)}
+                                style={{
+                                    marginTop: '8px',
+                                    background: 'rgba(255, 255, 255, 0.05)',
+                                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                                    color: 'var(--text-muted)',
+                                    borderRadius: '4px',
+                                    padding: '3px 6px',
+                                    fontSize: '9px',
+                                    cursor: 'pointer',
+                                    width: '100%',
+                                    fontWeight: '600'
+                                }}
+                            >
+                                Hold 25s
+                            </button>
                         </div>
                     );
                 })}

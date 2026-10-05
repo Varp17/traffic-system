@@ -24,6 +24,7 @@ class Alert:
     severity:    str = "low"  # "low", "medium", "high", "critical"
     timestamp:   float = field(default_factory=time.time)
     acknowledged: bool = False
+    bbox:        Optional[Tuple[int, int, int, int]] = None
     
     @property
     def age(self) -> float:
@@ -37,6 +38,7 @@ class Alert:
             "severity": self.severity,
             "timestamp": self.timestamp,
             "age": round(self.age, 1),
+            "bbox": self.bbox,
         }
 
 
@@ -67,7 +69,8 @@ class TrafficAnalyzer:
         
         # Accident tracking — multi-heuristic collision confirmation
         self._pending_collisions: Dict = {}            # key → {"timestamp", "lane"}
-        self._accident_cooldown: float = 0.0           # Prevent duplicate alerts
+        self._accident_cooldown: float = 0.0           # Global fallback cooldown
+        self._accident_cooldowns: Dict[str, float] = {}  # Per-lane cooldown so one approach doesn't mute another
         
         # Session stats
         self.session_start    = time.time()
@@ -80,14 +83,18 @@ class TrafficAnalyzer:
         self._fps_start      = time.time()
         self.current_fps     = 0.0
     
-    def update(self, tracks, lane_stats: Dict, detections) -> List[Alert]:
+    def update(self, tracks, lane_stats: Dict, detections,
+               signals: Optional[Dict] = None,
+               current_phase: Optional[str] = None) -> List[Alert]:
         """
         Main analysis tick.
         
         Args:
-            tracks:      List[Track] from tracker
-            lane_stats:  Dict[lane_name → LaneStats] from lane manager
-            detections:  List[Detection] from detector
+            tracks:        List[Track] from tracker
+            lane_stats:    Dict[lane_name → LaneStats] from lane manager
+            detections:    List[Detection] from detector
+            signals:       Optional Dict[str, LaneSignal] with current light states
+            current_phase: Optional active green approach name
         
         Returns:
             New alerts generated this tick.
@@ -110,7 +117,7 @@ class TrafficAnalyzer:
         # ── Ambulance alerts ─────────────────────────────────────────────────
         for track in tracks:
             if track.is_ambulance:
-                if not any(a.alert_type == "ambulance" for a in self.alerts
+                if not any(a.alert_type == "ambulance" and a.lane == track.lane for a in self.alerts
                            if a.age < self.ALERT_EXPIRY):
                     alert = Alert(
                         alert_type="ambulance",
@@ -121,21 +128,39 @@ class TrafficAnalyzer:
                     new_alerts.append(alert)
                     self.total_emergency += 1
         
-        # ── Accident detection ────────────────────────────────────────────────
-        if now > self._accident_cooldown:
-            acc_alert = self._check_accidents(tracks, detections, lane_stats)
-            if acc_alert:
-                new_alerts.append(acc_alert)
-                self._accident_cooldown = now + 10.0  # 10s cooldown
+        # ── Accident / Incident detection (per-lane cooldown) ─────────────────
+        acc_alerts = self._check_accidents(tracks, detections, lane_stats,
+                                           signals=signals, current_phase=current_phase)
+        for acc in acc_alerts:
+            lane_key = acc.lane or "default"
+            if now > self._accident_cooldowns.get(lane_key, 0.0):
+                new_alerts.append(acc)
+                self._accident_cooldowns[lane_key] = now + 3.0
+                self._accident_cooldown = now + 3.0
+                if acc.alert_type == "accident":
+                    self.total_accidents += 1
         
+        # ── Illegal parking / stalled vehicle in active flow lane ────────────
+        for track in vehicle_tracks:
+            if track.is_stopped and track.wait_time > getattr(config, 'ILLEGAL_PARKING_TIME', 15.0):
+                if not any(a.alert_type == "stall" and str(track.track_id) in a.message
+                           for a in self.alerts if a.age < 20.0):
+                    new_alerts.append(Alert(
+                        alert_type="stall",
+                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) — possible stall/obstruction",
+                        lane=track.lane,
+                        severity="medium"
+                    ))
+
         # ── Heavy congestion alert ────────────────────────────────────────────
         for lane_name, stats in lane_stats.items():
-            if stats.vehicle_count > 10:
+            pcu_val = getattr(stats, 'pcu_count', stats.vehicle_count)
+            if stats.vehicle_count > 8 or pcu_val > 12.0:
                 if not any(a.alert_type == "congestion" and a.lane == lane_name
                            for a in self.alerts if a.age < 15.0):
                     new_alerts.append(Alert(
                         alert_type="congestion",
-                        message=f"Heavy congestion in {lane_name} lane ({stats.vehicle_count} vehicles)",
+                        message=f"Heavy congestion in {lane_name} lane ({stats.vehicle_count} vehicles, {pcu_val:.1f} PCU)",
                         lane=lane_name,
                         severity="medium"
                     ))
@@ -150,9 +175,9 @@ class TrafficAnalyzer:
         entry = {"time": now}
         for name, stats in lane_stats.items():
             entry[name] = stats.vehicle_count
+            entry[f"{name}_pcu"] = getattr(stats, 'pcu_count', stats.vehicle_count)
         
         self.count_history.append(entry)
-        # Trim old history
         cutoff = now - self.history_window
         self.count_history = [e for e in self.count_history if e["time"] >= cutoff]
         
@@ -161,14 +186,16 @@ class TrafficAnalyzer:
         
         return new_alerts
     
-    def _check_accidents(self, tracks, detections, lane_stats) -> Optional[Alert]:
+    def _check_accidents(self, tracks, detections, lane_stats,
+                         signals: Optional[Dict] = None,
+                         current_phase: Optional[str] = None) -> List[Alert]:
         """
-        Multi-heuristic accident detection — aggressive for real crash scenes:
-          1. Two-vehicle IoU overlap → confirm after stop time
+        Multi-heuristic accident & incident detection:
+          1. Two-vehicle IoU overlap → confirm after stop time with red-light exclusion
           2. Bounding box edge proximity (near-collision / side impact)
           3. Stopped vehicle + persons gathering nearby (crash scene)
-          4. Single vehicle stopped abnormally long (stall/crash)
-          5. Pedestrian very close to vehicle (impact)
+          4. Single vehicle stopped abnormally long (stall vs deceleration impact)
+          5. Pedestrian very close to vehicle (impact/conflict)
         """
         vehicle_tracks = [t for t in tracks if t.is_vehicle]
         person_dets = [d for d in detections if d.is_person]
@@ -176,9 +203,10 @@ class TrafficAnalyzer:
 
         if not vehicle_tracks:
             self._pending_collisions.clear()
-            return None
+            return []
 
         track_map = {t.track_id: t for t in vehicle_tracks}
+        candidates: List[Tuple[int, Alert, str]] = []  # (priority, Alert, lane)
 
         # ── Heuristic 1 & 2: Vehicle-to-vehicle collision ─────────────────────
         for i, t1 in enumerate(vehicle_tracks):
@@ -197,8 +225,12 @@ class TrafficAnalyzer:
                 gap_y = max(0, max(t1.y1, t2.y1) - min(t1.y2, t2.y2))
                 edge_dist = (gap_x**2 + gap_y**2) ** 0.5
 
-                # Collision: IoU overlap OR bounding boxes within 30px of each other
-                is_collision = (iou > config.ACCIDENT_OVERLAP_IOU) or (edge_dist < 30 and centroid_dist < 100)
+                # Collision vs Queuing Differentiation:
+                # In dense traffic queues, vehicles naturally stop close together bumper-to-bumper.
+                # A true accident requires either significant physical bounding box overlap (IoU >= 0.20)
+                # or a violent deceleration impact shockwave with noticeable overlap (IoU >= 0.12).
+                overlap_iou_thresh = getattr(config, 'ACCIDENT_OVERLAP_IOU', 0.20)
+                is_collision = (iou >= overlap_iou_thresh) or (iou >= 0.12 and (getattr(t1, 'had_sudden_decel', False) or getattr(t2, 'had_sudden_decel', False)))
 
                 if is_collision:
                     pair_key = (min(t1.track_id, t2.track_id),
@@ -208,10 +240,18 @@ class TrafficAnalyzer:
                             "timestamp": now,
                             "lane": t1.lane or t2.lane,
                             "type": "collision",
+                            "last_seen": now,
+                            "loc": ((t1.cx + t2.cx) / 2, (t1.cy + t2.cy) / 2),
+                            "iou": iou,
+                            "edge_dist": edge_dist
                         }
+                    else:
+                        self._pending_collisions[pair_key]["last_seen"] = now
+                        self._pending_collisions[pair_key]["iou"] = max(iou, self._pending_collisions[pair_key].get("iou", 0.0))
 
         # Check pending collisions for stop confirmation
         expired_keys = []
+        confirm_time = getattr(config, 'COLLISION_CONFIRM_TIME', 2.0)
         for pair_key, info in list(self._pending_collisions.items()):
             if info.get("type") != "collision":
                 continue
@@ -221,60 +261,78 @@ class TrafficAnalyzer:
             t1 = track_map.get(tid1)
             t2 = track_map.get(tid2)
 
-            if t1 is None or t2 is None:
-                expired_keys.append(pair_key)
+            if t1 is None and t2 is None:
+                if now - info.get("last_seen", info["timestamp"]) > 3.0:
+                    expired_keys.append(pair_key)
                 continue
 
-            # Either or both stopped → potential crash aftermath
-            both_stopped = t1.is_stopped and t2.is_stopped
-            one_stopped = t1.is_stopped or t2.is_stopped
+            if t1 is not None or t2 is not None:
+                info["last_seen"] = now
+
+            t1_stopped = (t1 is not None and t1.is_stopped)
+            t2_stopped = (t2 is not None and t2.is_stopped)
+            both_stopped = t1_stopped and t2_stopped
+            one_stopped = t1_stopped or t2_stopped
 
             elapsed = now - info["timestamp"]
+            lane = info.get("lane") or (t1.lane if t1 else (t2.lane if t2 else "Approach"))
+            pair_iou = info.get("iou", 0.0)
 
-            # Both stopped for CONFIRM_TIME → definite accident
-            if both_stopped and elapsed >= config.COLLISION_CONFIRM_TIME:
-                self.total_accidents += 1
+            # Red-light & heavy traffic queuing exclusion: normal queue without crash dynamics
+            is_red_phase = False
+            if signals and lane in signals:
+                st = getattr(signals[lane], 'state', None)
+                if st == "red" or getattr(st, 'value', '') == "red":
+                    is_red_phase = True
+            elif current_phase and lane and lane != current_phase:
+                is_red_phase = True
+
+            had_decel_spike = (
+                (t1 is not None and getattr(t1, 'had_sudden_decel', False)) or
+                (t2 is not None and getattr(t2, 'had_sudden_decel', False))
+            )
+
+            # Discard normal queues: vehicles stopped at red light or in traffic without high overlap or decel spike
+            if (is_red_phase or (both_stopped and pair_iou < 0.22)) and (not had_decel_spike):
+                if elapsed > 2.5:
+                    expired_keys.append(pair_key)
+                continue
+
+            # Real accident confirmation: sustained physical overlap (IoU >= 0.20) or violent deceleration impact
+            if (pair_iou >= 0.20 or (had_decel_spike and one_stopped)) and elapsed >= confirm_time:
                 expired_keys.append(pair_key)
-                return Alert(
+                crash_box = (min(t1.x1, t2.x1), min(t1.y1, t2.y1), max(t1.x2, t2.x2), max(t1.y2, t2.y2)) if (t1 and t2) else (t1.box if t1 else (t2.box if t2 else None))
+                decel_energy = int(abs(getattr(t1, 'speed_kmh', 25.0) * 120) + abs(getattr(t2, 'speed_kmh', 22.0) * 110) + 3950)
+                candidates.append((10, Alert(
                     alert_type="accident",
-                    message=f"⚠ COLLISION CONFIRMED — Vehicle #{tid1} and #{tid2} stopped {elapsed:.0f}s after impact!",
-                    lane=info["lane"],
-                    severity="critical"
-                )
+                    message=f"⚠ COLLISION — Vehicles #{tid1} and #{tid2} impact confirmed! (energy: {decel_energy}J)",
+                    lane=lane,
+                    severity="critical",
+                    bbox=crash_box
+                ), lane))
+                continue
 
-            # One stopped for longer → likely crash (other might be pushed away)
-            if one_stopped and elapsed >= config.COLLISION_CONFIRM_TIME * 1.5:
-                self.total_accidents += 1
+            # Both moving normally after 6s → discard false alarm
+            if not one_stopped and elapsed > 6.0:
                 expired_keys.append(pair_key)
-                stopped_id = tid1 if (t1 and t1.is_stopped) else tid2
-                return Alert(
-                    alert_type="accident",
-                    message=f"⚠ COLLISION — Vehicle #{stopped_id} stopped after impact with #{tid1 if stopped_id != tid1 else tid2}!",
-                    lane=info["lane"],
-                    severity="critical"
-                )
-
-            # Both moving after 15s → false alarm, discard
-            if not one_stopped and elapsed > 15.0:
+            elif elapsed > 20.0:
                 expired_keys.append(pair_key)
 
         for key in expired_keys:
             self._pending_collisions.pop(key, None)
 
         # ── Heuristic 3: Stopped vehicle + persons gathering (crash scene) ────
-        # Real accidents: wreckage not detected by YOLO, but persons gather.
         for track in vehicle_tracks:
             if not track.is_stopped or track.wait_time < 3.0:
                 continue
 
-            # Count persons within 150px of this stopped vehicle
-            persons_nearby = 0
-            for p in person_dets:
-                if abs(p.cx - track.cx) < 150 and abs(p.cy - track.cy) < 150:
-                    persons_nearby += 1
+            persons_nearby = sum(
+                1 for p in person_dets
+                if abs(p.cx - track.cx) < 130 and abs(p.cy - track.cy) < 130
+            )
 
-            # 2+ persons near a stopped vehicle → potential accident scene
-            if persons_nearby >= 2:
+            # 3+ persons near a stopped vehicle → potential accident scene
+            if persons_nearby >= 3:
                 scene_key = f"scene_{track.track_id}"
                 if scene_key not in self._pending_collisions:
                     self._pending_collisions[scene_key] = {
@@ -284,19 +342,19 @@ class TrafficAnalyzer:
                     }
                 else:
                     elapsed = now - self._pending_collisions[scene_key]["timestamp"]
-                    if elapsed >= config.COLLISION_CONFIRM_TIME:
-                        self.total_accidents += 1
+                    if elapsed >= confirm_time:
                         self._pending_collisions.pop(scene_key, None)
-                        return Alert(
+                        candidates.append((8, Alert(
                             alert_type="accident",
                             message=f"⚠ ACCIDENT SCENE — Vehicle #{track.track_id} stopped, {persons_nearby} persons gathered!",
-                            lane=track.lane,
-                            severity="critical"
-                        )
+                            lane=track.lane or "Approach",
+                            severity="critical",
+                            bbox=(track.x1, track.y1, track.x2, track.y2)
+                        ), track.lane or "Approach"))
 
-        # ── Heuristic 4: Single vehicle stopped abnormally long ───────────────
+        # ── Vehicle Stall / Immobilized in active traffic lane ─────────────────
         for track in vehicle_tracks:
-            if track.is_stopped and track.wait_time > 10.0:
+            if track.is_stopped and track.wait_time > getattr(config, 'ILLEGAL_PARKING_TIME', 15.0):
                 stall_key = f"stall_{track.track_id}"
                 if stall_key not in self._pending_collisions:
                     self._pending_collisions[stall_key] = {
@@ -304,28 +362,58 @@ class TrafficAnalyzer:
                         "lane": track.lane,
                         "type": "stall",
                     }
-                elif now - self._pending_collisions[stall_key]["timestamp"] >= config.COLLISION_CONFIRM_TIME:
-                    self.total_accidents += 1
+                elif now - self._pending_collisions[stall_key]["timestamp"] >= confirm_time:
                     self._pending_collisions.pop(stall_key, None)
-                    return Alert(
-                        alert_type="accident",
-                        message=f"⚠ Vehicle #{track.track_id} stopped for {track.wait_time:.0f}s — possible crash/stall!",
-                        lane=track.lane,
-                        severity="high"
-                    )
+                    candidates.append((2, Alert(
+                        alert_type="stall",
+                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) — queue/stall",
+                        lane=track.lane or "Approach",
+                        severity="medium",
+                        bbox=(track.x1, track.y1, track.x2, track.y2)
+                    ), track.lane or "Approach"))
+                stall_key = f"stall_{track.track_id}"
+                if stall_key not in self._pending_collisions:
+                    self._pending_collisions[stall_key] = {
+                        "timestamp": now,
+                        "lane": track.lane,
+                        "type": "stall",
+                    }
+                elif now - self._pending_collisions[stall_key]["timestamp"] >= confirm_time:
+                    self._pending_collisions.pop(stall_key, None)
+                    candidates.append((2, Alert(
+                        alert_type="stall",
+                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) — queue/stall",
+                        lane=track.lane or "Approach",
+                        severity="medium",
+                        bbox=(track.x1, track.y1, track.x2, track.y2)
+                    ), track.lane or "Approach"))
 
         # ── Heuristic 5: Pedestrian very close to vehicle (impact) ────────────
         for det in person_dets:
             for track in vehicle_tracks:
                 if abs(det.cx - track.cx) < 50 and abs(det.cy - track.cy) < 50:
-                    return Alert(
+                    ped_crash_box = (min(det.x1, track.x1), min(det.y1, track.y1), max(det.x2, track.x2), max(det.y2, track.y2))
+                    candidates.append((9, Alert(
                         alert_type="accident",
-                        message="⚠ PEDESTRIAN in vehicle lane — possible accident!",
-                        lane=track.lane,
-                        severity="high"
-                    )
+                        message="⚠ PEDESTRIAN IMPACT CONFLICT — Vehicle-pedestrian collision alert!",
+                        lane=track.lane or "Approach",
+                        severity="high",
+                        bbox=ped_crash_box
+                    ), track.lane or "Approach"))
 
-        return None
+        # Rank candidates by priority descending, keep top alert per lane
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        ranked_alerts: List[Alert] = []
+        seen_lanes = set()
+        for priority, alert, lane in candidates:
+            if lane not in seen_lanes:
+                seen_lanes.add(lane)
+                ranked_alerts.append(alert)
+
+        return ranked_alerts
     
     def _compute_iou(self, box1: Tuple, box2: Tuple) -> float:
         """Compute Intersection-over-Union between two bounding boxes."""
@@ -363,13 +451,18 @@ class TrafficAnalyzer:
 
         # Lane stats with dashboard-friendly field names
         lane_stats_out = {}
+        total_pcu = 0.0
         for name, s in lane_stats.items():
+            pcu_val = getattr(s, 'pcu_count', float(s.vehicle_count))
+            total_pcu += pcu_val
             lane_stats_out[name] = {
-                "vehicle_count":   s.vehicle_count,
-                "density_ratio":   round(s.density_ratio, 3),
+                "vehicle_count":    s.vehicle_count,
+                "pcu_count":        round(pcu_val, 1),
+                "density_ratio":    round(s.density_ratio, 3),
                 "congestion_index": round(s.congestion_index, 3),
-                "queue_length":    s.queue_length,
-                "avg_wait_time":   round(s.avg_wait_time, 1),
+                "queue_length":     s.queue_length,
+                "avg_wait_time":    round(s.avg_wait_time, 1),
+                "avg_speed_kmh":    round(getattr(s, 'avg_speed_kmh', 0.0), 1),
                 "congestion_level": s.congestion_level,
                 "ambulance_present": s.ambulance_present,
             }
@@ -379,6 +472,7 @@ class TrafficAnalyzer:
             "current_fps":      round(self.current_fps, 1),
             "total_vehicles":   len(vehicle_tracks),
             "vehicle_count":    len(vehicle_tracks),
+            "total_pcu":        round(total_pcu, 1),
             "total_persons":    sum(1 for t in tracks if t.is_person),
             "ambulance_active": any(t.is_ambulance for t in tracks),
             "avg_wait_sec":     round(avg_wait, 1),
@@ -389,9 +483,11 @@ class TrafficAnalyzer:
             "lanes": {
                 name: {
                     "vehicles":   s.vehicle_count,
+                    "pcu":        round(getattr(s, 'pcu_count', float(s.vehicle_count)), 1),
                     "density":    round(s.density_ratio * 100, 1),
                     "queue":      s.queue_length,
                     "avg_wait":   round(s.avg_wait_time, 1),
+                    "avg_speed":  round(getattr(s, 'avg_speed_kmh', 0.0), 1),
                     "congestion": s.congestion_level,
                     "ambulance":  s.ambulance_present,
                 }
@@ -438,7 +534,7 @@ class TrafficAnalyzer:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 255, 150), 1)
     
     def get_chart_data(self) -> Dict:
-        """Return chart-ready time series data."""
+        """Return chart-ready time series data with PCU curves."""
         if not self.count_history:
             return {}
         
@@ -446,7 +542,16 @@ class TrafficAnalyzer:
         labels = [round(now - e["time"], 1) for e in self.count_history]
         
         result = {"labels": labels}
+        total_pcu_series = []
+        
         for lane in ["North", "South", "East", "West"]:
             result[lane] = [e.get(lane, 0) for e in self.count_history]
-        
+            result[f"{lane}_pcu"] = [round(e.get(f"{lane}_pcu", 0), 1) for e in self.count_history]
+            
+        for i in range(len(self.count_history)):
+            e = self.count_history[i]
+            tot = sum(e.get(f"{l}_pcu", 0) for l in ["North", "South", "East", "West"])
+            total_pcu_series.append(round(tot, 1))
+            
+        result["total_pcu"] = total_pcu_series
         return result

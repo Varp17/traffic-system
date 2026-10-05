@@ -1,22 +1,73 @@
 import { useState, useEffect, useRef } from 'react';
 
 const LAYOUT_OPTIONS = [
-    { label: "🔲 Default Layout", value: "[0,1,2,3]" },
+    { label: "🔲 Standard Quad (N, S, E, W)", value: "[0,1,2,3]" },
     { label: "↔️ Swap East ↔ West", value: "[0,1,3,2]" },
     { label: "↕️ Swap North ↔ South", value: "[1,0,2,3]" },
-    { label: "🔄 Swap N↔E and S↔W", value: "[2,3,0,1]" },
-    { label: "🔁 Reverse Order", value: "[3,2,1,0]" }
+    { label: "🔄 Rotate 180°", value: "[2,3,0,1]" },
+    { label: "🔁 Inverse Sequence", value: "[3,2,1,0]" }
 ];
 
-export default function Header({ metrics, uptime, isConnected, currentView, setCurrentView }) {
+export default function Header({ metrics, audioSiren, uptime, isConnected, currentView, setCurrentView, onOpenBlueprint }) {
     const [isDropdownOpen, setIsDropdownOpen] = useState(false);
     const [selectedLayout, setSelectedLayout] = useState(LAYOUT_OPTIONS[0]);
+    const [isLiveMode, setIsLiveMode] = useState(false);
     const dropdownRef = useRef(null);
+
+    // Neural Model Switcher State
+    const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
+    const [activeModelId, setActiveModelId] = useState('yolov8_traffic_trained.pt');
+    const [activeModelLabel, setActiveModelLabel] = useState('Custom YOLOv8 (Your Trained Model)');
+    const [isSwitchingModel, setIsSwitchingModel] = useState(false);
+    const modelDropdownRef = useRef(null);
+
+    const fetchActiveModel = async () => {
+        try {
+            const res = await fetch('/api/ml/models');
+            if (res.ok) {
+                const models = await res.json();
+                const active = models.find(m => m.active);
+                if (active) {
+                    setActiveModelId(active.id);
+                    setActiveModelLabel(active.label);
+                }
+            }
+        } catch (e) {}
+    };
+
+    useEffect(() => {
+        fetchActiveModel();
+        const interval = setInterval(fetchActiveModel, 5000);
+        return () => clearInterval(interval);
+    }, []);
+
+    const handleSelectModel = async (modelId) => {
+        setIsSwitchingModel(true);
+        setIsModelDropdownOpen(false);
+        try {
+            const res = await fetch('/api/ml/select-model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: modelId })
+            });
+            if (res.ok) {
+                setActiveModelId(modelId);
+                fetchActiveModel();
+            }
+        } catch (e) {
+            console.error('Failed to switch model:', e);
+        } finally {
+            setIsSwitchingModel(false);
+        }
+    };
 
     useEffect(() => {
         function handleClickOutside(event) {
             if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
                 setIsDropdownOpen(false);
+            }
+            if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target)) {
+                setIsModelDropdownOpen(false);
             }
         }
         document.addEventListener("mousedown", handleClickOutside);
@@ -25,8 +76,9 @@ export default function Header({ metrics, uptime, isConnected, currentView, setC
 
     const fps = parseFloat(metrics?.fps || metrics?.current_fps || 0).toFixed(1);
     const veh = metrics?.total_vehicles || metrics?.vehicle_count || 0;
+    const totalPcu = metrics?.total_pcu || veh;
 
-    // ─── Environment Impact Calculations ───
+    // Environmental Telemetry Tracking
     const vehRef = useRef(0);
     useEffect(() => {
         vehRef.current = veh;
@@ -35,108 +87,186 @@ export default function Header({ metrics, uptime, isConnected, currentView, setC
     const [idleSavedSec, setIdleSavedSec] = useState(0);
     useEffect(() => {
         const interval = setInterval(() => {
-            // Estimate: AI saves 0.5 seconds of idle time per second for each tracked vehicle
-            setIdleSavedSec(prev => prev + (vehRef.current * 0.5));
+            setIdleSavedSec(prev => prev + (vehRef.current * 0.4));
         }, 1000);
         return () => clearInterval(interval);
     }, []);
 
-    // 1️⃣ Idle Time Reduced → seconds converted into hours
     const idleHours = idleSavedSec / 3600;
-    // 2️⃣ Fuel Rate → approx 0.8 liters/hour
     const fuelSaved = idleHours * 0.8;
-    // 3️⃣ Total CO₂ Reduced = Fuel Saved × 2.31 kg
     const co2Reduced = fuelSaved * 2.31;
-    // ───────────────────────────────────────
-
-    const [isLiveMode, setIsLiveMode] = useState(false);
-
-    // ... (rest of the component) ...
-    // Note: I am placing the state inline as a temporary toggle.
 
     return (
-        <header>
+        <header style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            padding: '10px 20px',
+            background: '#090e1a',
+            borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+            zIndex: 40
+        }}>
+            {/* Left: Brand Identity matching user screenshot */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <span style={{ fontSize: '24px' }}>🚦</span>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                    <span style={{ fontWeight: '700', fontSize: '15px', letterSpacing: '0.5px' }}>
+                    <span style={{ fontWeight: '700', fontSize: '15px', color: '#fff', letterSpacing: '0.3px' }}>
                         AI Traffic Control System
                     </span>
-                    <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
-                        YOLOv8 Detection &bull; Adaptive Signal Control
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: '500' }}>
+                        {activeModelLabel} &bull; Adaptive Signal Control
                     </span>
                 </div>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', background: 'rgba(255,255,255,0.05)', padding: '4px', borderRadius: '12px', alignItems: 'center' }}>
+            {/* Center: Navigation Views */}
+            <div style={{
+                display: 'flex', gap: '8px',
+                background: 'rgba(255, 255, 255, 0.04)',
+                padding: '4px', borderRadius: '10px',
+                alignItems: 'center',
+                border: '1px solid rgba(255, 255, 255, 0.06)'
+            }}>
+                {/* 1. Live Dashboard Tab */}
                 <button
-                    onClick={() => setCurrentView('dashboard')}
+                    onClick={() => setCurrentView('main-command-hub')}
                     style={{
-                        background: currentView === 'dashboard' ? 'var(--blue)' : 'transparent',
-                        color: currentView === 'dashboard' ? '#fff' : 'var(--muted)',
-                        border: 'none', padding: '8px 16px', borderRadius: '8px',
-                        fontSize: '13px', fontWeight: '600', cursor: 'pointer',
-                        transition: 'all 0.2s'
+                        background: (currentView === 'main-command-hub' || currentView === 'dashboard') ? 'rgba(56, 189, 248, 0.18)' : 'transparent',
+                        color: (currentView === 'main-command-hub' || currentView === 'dashboard') ? '#fff' : '#94a3b8',
+                        border: (currentView === 'main-command-hub' || currentView === 'dashboard') ? '1px solid rgba(56, 189, 248, 0.4)' : '1px solid transparent',
+                        padding: '7px 14px', borderRadius: '8px',
+                        fontSize: '12px', fontWeight: '700', cursor: 'pointer',
+                        transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', gap: '6px'
                     }}>
-                    🚦 Live Dashboard
+                    <span>📊</span> Live Dashboard
                 </button>
+
+                {/* 2. Incident Feed Tab - Active Red Button matching screenshot */}
                 <button
                     onClick={() => setCurrentView('incidents')}
                     style={{
-                        background: currentView === 'incidents' ? 'var(--red)' : 'transparent',
-                        color: currentView === 'incidents' ? '#fff' : 'var(--muted)',
-                        border: 'none', padding: '8px 16px', borderRadius: '8px',
-                        fontSize: '13px', fontWeight: '600', cursor: 'pointer',
-                        transition: 'all 0.2s'
+                        background: currentView === 'incidents' ? '#ef4444' : 'transparent',
+                        color: currentView === 'incidents' ? '#ffffff' : '#94a3b8',
+                        border: currentView === 'incidents' ? '1px solid #ef4444' : '1px solid transparent',
+                        boxShadow: currentView === 'incidents' ? '0 0 14px rgba(239, 68, 68, 0.45)' : 'none',
+                        padding: '7px 14px', borderRadius: '8px',
+                        fontSize: '12px', fontWeight: '700', cursor: 'pointer',
+                        transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', gap: '6px'
                     }}>
-                    ⚠️ Incident Feed
+                    <span>⚠️</span> Incident Feed
                 </button>
-                <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 4px' }}></div>
 
+                {/* 3. 7-Column Detection Matrix Tab - Preservation of beloved detection squares screen */}
+                <button
+                    onClick={() => setCurrentView('tactical-scanner')}
+                    style={{
+                        background: currentView === 'tactical-scanner' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
+                        color: currentView === 'tactical-scanner' ? '#10b981' : '#94a3b8',
+                        border: currentView === 'tactical-scanner' ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid transparent',
+                        padding: '7px 12px', borderRadius: '8px',
+                        fontSize: '12px', fontWeight: '700', cursor: 'pointer',
+                        transition: 'all 0.2s ease', display: 'flex', alignItems: 'center', gap: '6px'
+                    }}
+                    title="7-Column Multi-Quadrant Detection Matrix & Radar"
+                >
+                    <span>🎯</span> 7-Col Matrix
+                </button>
+
+                {/* Neural Model Switcher Dropdown */}
+                <div ref={modelDropdownRef} style={{ position: 'relative' }}>
+                    <button
+                        onClick={() => setIsModelDropdownOpen(!isModelDropdownOpen)}
+                        disabled={isSwitchingModel}
+                        style={{
+                            background: activeModelId.includes('traffic_trained') ? 'rgba(16, 185, 129, 0.18)' : 'rgba(56, 189, 248, 0.12)',
+                            color: activeModelId.includes('traffic_trained') ? '#34d399' : '#38bdf8',
+                            border: activeModelId.includes('traffic_trained') ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(56, 189, 248, 0.35)',
+                            padding: '7px 12px',
+                            borderRadius: '8px',
+                            fontSize: '12px',
+                            fontWeight: '700',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '6px',
+                            boxShadow: activeModelId.includes('traffic_trained') ? '0 0 10px rgba(16, 185, 129, 0.2)' : 'none'
+                        }}
+                        title="Active Neural Model (Click to Switch)"
+                    >
+                        <span>🧠</span>
+                        <span>{activeModelId.includes('traffic_trained') ? 'Custom Traffic (Trained)' : (activeModelId.includes('11') ? 'YOLOv11 Nano' : 'YOLOv8 Baseline')}</span>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+
+                    {isModelDropdownOpen && (
+                        <div style={{
+                            position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                            background: '#090e1a', border: '1px solid rgba(56, 189, 248, 0.25)',
+                            borderRadius: '10px', padding: '6px', width: '280px',
+                            display: 'flex', flexDirection: 'column', gap: '4px',
+                            boxShadow: '0 12px 30px rgba(0,0,0,0.7)', zIndex: 100
+                        }}>
+                            <div style={{ padding: '4px 8px', fontSize: '10px', color: '#64748b', fontWeight: '800', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                                Neural Model Zoo
+                            </div>
+                            {[
+                                { id: 'yolov8_traffic_trained.pt', label: '⭐ Custom Traffic (Your Trained Model)', badge: '6 Classes • Fine-Tuned (Fastest)' },
+                                { id: 'yolo11n.pt', label: '⚡ YOLOv11 Nano SOTA', badge: '80 Classes • Multi-Vehicle' },
+                                { id: 'yolov8n.pt', label: '📦 YOLOv8 Nano Baseline', badge: '80 Classes • Standard COCO' }
+                            ].map((m) => (
+                                <button
+                                    key={m.id}
+                                    onClick={() => handleSelectModel(m.id)}
+                                    style={{
+                                        background: activeModelId === m.id ? 'rgba(56, 189, 248, 0.18)' : 'transparent',
+                                        color: activeModelId === m.id ? '#38bdf8' : '#e2e8f0',
+                                        border: 'none', padding: '8px 10px', borderRadius: '6px',
+                                        fontSize: '11px', fontWeight: '600', cursor: 'pointer', textAlign: 'left',
+                                        display: 'flex', flexDirection: 'column', gap: '2px'
+                                    }}
+                                >
+                                    <span style={{ fontWeight: '700' }}>{m.label}</span>
+                                    <span style={{ fontSize: '9px', color: '#94a3b8' }}>{m.badge}</span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* Camera Layout Dropdown */}
                 <div ref={dropdownRef} style={{ position: 'relative' }}>
                     <button
                         onClick={() => setIsDropdownOpen(!isDropdownOpen)}
                         disabled={isLiveMode}
                         style={{
-                            background: isDropdownOpen ? '#020617' : '#020617',
-                            color: isLiveMode ? 'var(--muted)' : '#fff',
-                            border: '1px solid',
-                            borderColor: isDropdownOpen ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)',
-                            padding: '8px 16px',
+                            background: '#040814',
+                            color: '#fff',
+                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            padding: '7px 12px',
                             borderRadius: '8px',
-                            fontSize: '13px',
+                            fontSize: '12px',
                             fontWeight: '600',
-                            cursor: isLiveMode ? 'not-allowed' : 'pointer',
+                            cursor: 'pointer',
                             display: 'flex',
                             alignItems: 'center',
-                            gap: '8px',
-                            transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
-                            boxShadow: isDropdownOpen ? '0 4px 12px rgba(0,0,0,0.5)' : 'none',
+                            gap: '6px'
                         }}
                     >
                         <span>{selectedLayout.label}</span>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-                            style={{ transition: 'transform 0.2s', transform: isDropdownOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                             <polyline points="6 9 12 15 18 9"></polyline>
                         </svg>
                     </button>
 
                     {isDropdownOpen && !isLiveMode && (
                         <div style={{
-                            position: 'absolute',
-                            top: 'calc(100% + 8px)',
-                            right: 0,
-                            background: '#020617',
-                            border: '1px solid rgba(255, 255, 255, 0.1)',
-                            borderRadius: '12px',
-                            padding: '6px',
-                            width: '200px',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            gap: '4px',
-                            boxShadow: '0 10px 25px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05) inset',
-                            zIndex: 100,
-                            animation: 'dropdownFadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+                            position: 'absolute', top: 'calc(100% + 6px)', left: 0,
+                            background: '#090e1a', border: '1px solid rgba(56, 189, 248, 0.25)',
+                            borderRadius: '10px', padding: '6px', width: '220px',
+                            display: 'flex', flexDirection: 'column', gap: '4px',
+                            boxShadow: '0 12px 30px rgba(0,0,0,0.7)', zIndex: 100
                         }}>
                             {LAYOUT_OPTIONS.map((option, idx) => (
                                 <button
@@ -145,37 +275,17 @@ export default function Header({ metrics, uptime, isConnected, currentView, setC
                                         setSelectedLayout(option);
                                         setIsDropdownOpen(false);
                                         const mapping = JSON.parse(option.value);
-                                        fetch(`http://${window.location.hostname}:8000/api/swap-video`, {
+                                        fetch('/api/swap-video', {
                                             method: 'POST',
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({ mapping })
                                         }).catch(err => console.error("Swap error:", err));
                                     }}
                                     style={{
-                                        background: selectedLayout.value === option.value ? 'rgba(255,255,255,0.1)' : 'transparent',
-                                        color: selectedLayout.value === option.value ? '#fff' : 'var(--muted)',
-                                        border: 'none',
-                                        padding: '8px 12px',
-                                        borderRadius: '6px',
-                                        fontSize: '13px',
-                                        fontWeight: '500',
-                                        cursor: 'pointer',
-                                        textAlign: 'left',
-                                        transition: 'all 0.1s',
-                                        display: 'flex',
-                                        alignItems: 'center'
-                                    }}
-                                    onMouseEnter={e => {
-                                        if (selectedLayout.value !== option.value) {
-                                            e.target.style.background = 'rgba(255,255,255,0.05)';
-                                            e.target.style.color = '#fff';
-                                        }
-                                    }}
-                                    onMouseLeave={e => {
-                                        if (selectedLayout.value !== option.value) {
-                                            e.target.style.background = 'transparent';
-                                            e.target.style.color = 'var(--muted)';
-                                        }
+                                        background: selectedLayout.value === option.value ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+                                        color: selectedLayout.value === option.value ? '#38bdf8' : '#94a3b8',
+                                        border: 'none', padding: '8px 10px', borderRadius: '6px',
+                                        fontSize: '11px', fontWeight: '600', cursor: 'pointer', textAlign: 'left'
                                     }}
                                 >
                                     {option.label}
@@ -185,33 +295,29 @@ export default function Header({ metrics, uptime, isConnected, currentView, setC
                     )}
                 </div>
 
-                <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 4px' }}></div>
-
+                {/* Start / Stop Live Feed Button */}
                 {!isLiveMode ? (
                     <button
                         onClick={() => {
-                            fetch(`http://${window.location.hostname}:8000/api/open-live-camera`, { method: 'POST' })
+                            fetch('/api/open-live-camera', { method: 'POST' })
                                 .then(() => setIsLiveMode(true))
                                 .catch(err => console.error('Failed to open live camera', err));
                         }}
                         style={{
-                            background: 'rgba(56, 189, 248, 0.15)',
+                            background: 'rgba(56, 189, 248, 0.12)',
                             color: '#38bdf8',
-                            border: '1px solid rgba(56, 189, 248, 0.4)',
-                            padding: '8px 16px', borderRadius: '8px',
-                            fontSize: '13px', fontWeight: '600', cursor: 'pointer',
-                            transition: 'all 0.2s',
-                            display: 'flex', alignItems: 'center', gap: '6px'
+                            border: '1px solid rgba(56, 189, 248, 0.35)',
+                            padding: '7px 12px', borderRadius: '8px',
+                            fontSize: '12px', fontWeight: '600', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', gap: '5px'
                         }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(56, 189, 248, 0.25)'}
-                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(56, 189, 248, 0.15)'}
                     >
-                        🎥 Start Live Feed
+                        <span>📹</span> Start Live Feed
                     </button>
                 ) : (
                     <button
                         onClick={() => {
-                            fetch(`http://${window.location.hostname}:8000/api/close-live-camera`, { method: 'POST' })
+                            fetch('/api/close-live-camera', { method: 'POST' })
                                 .then(() => setIsLiveMode(false))
                                 .catch(err => console.error('Failed to close live camera', err));
                         }}
@@ -219,77 +325,89 @@ export default function Header({ metrics, uptime, isConnected, currentView, setC
                             background: 'rgba(239, 68, 68, 0.15)',
                             color: '#ef4444',
                             border: '1px solid rgba(239, 68, 68, 0.4)',
-                            padding: '8px 16px', borderRadius: '8px',
-                            fontSize: '13px', fontWeight: '600', cursor: 'pointer',
-                            transition: 'all 0.2s',
-                            display: 'flex', alignItems: 'center', gap: '6px'
+                            padding: '7px 12px', borderRadius: '8px',
+                            fontSize: '12px', fontWeight: '600', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', gap: '5px'
                         }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.25)'}
-                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(239, 68, 68, 0.15)'}
                     >
-                        ⏹ Stop Live Feed
+                        <span>⏹</span> Stop Live Feed
                     </button>
                 )}
             </div>
 
-            <style>{`
-                @keyframes dropdownFadeIn {
-                    from { opacity: 0; transform: translateY(-8px) scale(0.95); }
-                    to { opacity: 1; transform: translateY(0) scale(1); }
-                }
-            `}</style>
-
-            <div style={{ display: 'flex', gap: '24px', alignItems: 'center' }}>
+            {/* Right: Real-Time Telemetry Badges matching screenshot */}
+            <div style={{ display: 'flex', gap: '20px', alignItems: 'center' }}>
+                {/* Fuel Saved */}
                 <div style={{ textAlign: 'center' }}>
-                    <div className="mono" style={{ color: '#f59e0b', fontSize: '18px', fontWeight: '700' }}>
-                        {fuelSaved.toFixed(4)}<span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '2px' }}>L</span>
+                    <div className="mono" style={{ color: '#f59e0b', fontSize: '15px', fontWeight: '800' }}>
+                        {fuelSaved.toFixed(4)}<span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '2px' }}>L</span>
                     </div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', textTransform: 'uppercase' }}>Fuel Saved</div>
+                    <div style={{ fontSize: '9px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: '700' }}>FUEL SAVED</div>
                 </div>
 
+                {/* CO2 Reduced */}
                 <div style={{ textAlign: 'center' }}>
-                    <div className="mono" style={{ color: '#10b981', fontSize: '18px', fontWeight: '700' }}>
-                        {co2Reduced.toFixed(4)}<span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '2px' }}>kg</span>
+                    <div className="mono" style={{ color: '#10b981', fontSize: '15px', fontWeight: '800' }}>
+                        {co2Reduced.toFixed(4)}<span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '2px' }}>kg</span>
                     </div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', textTransform: 'uppercase' }}>CO₂ Reduced</div>
+                    <div style={{ fontSize: '9px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: '700' }}>CO₂ REDUCED</div>
                 </div>
 
-                <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 4px' }}></div>
+                <div style={{ width: '1px', height: '18px', background: 'rgba(255,255,255,0.1)' }}></div>
 
+                {/* FPS */}
                 <div style={{ textAlign: 'center' }}>
-                    <div className="mono" style={{ color: 'var(--green)', fontSize: '18px', fontWeight: '700' }}>
+                    <div className="mono" style={{ color: '#10b981', fontSize: '15px', fontWeight: '800' }}>
                         {fps}
                     </div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', textTransform: 'uppercase' }}>FPS</div>
+                    <div style={{ fontSize: '9px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: '700' }}>FPS</div>
                 </div>
 
+                {/* Vehicles */}
                 <div style={{ textAlign: 'center' }}>
-                    <div className="mono" style={{ color: 'var(--blue)', fontSize: '18px', fontWeight: '700' }}>
+                    <div className="mono" style={{ color: '#38bdf8', fontSize: '15px', fontWeight: '800' }}>
                         {veh}
                     </div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', textTransform: 'uppercase' }}>Vehicles</div>
+                    <div style={{ fontSize: '9px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: '700' }}>VEHICLES</div>
                 </div>
 
+                {/* Uptime */}
                 <div style={{ textAlign: 'center' }}>
-                    <div className="mono" style={{ color: 'var(--purple)', fontSize: '18px', fontWeight: '700' }}>
+                    <div className="mono" style={{ color: '#c084fc', fontSize: '15px', fontWeight: '800' }}>
                         {uptime}
                     </div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)', textTransform: 'uppercase' }}>Uptime</div>
+                    <div style={{ fontSize: '9px', color: '#94a3b8', textTransform: 'uppercase', fontWeight: '700' }}>UPTIME</div>
                 </div>
 
-                <div
-                    style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        background: isConnected ? 'rgba(16, 185, 129, 0.1)' : 'rgba(239, 68, 68, 0.1)',
-                        border: isConnected ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-                        padding: '6px 12px',
-                        borderRadius: '20px',
-                        fontSize: '11px',
-                        fontWeight: '600'
-                    }}
-                >
+                {/* Project Blueprint Button */}
+                {onOpenBlueprint && (
+                    <button
+                        onClick={onOpenBlueprint}
+                        title="Architecture & Math Blueprint"
+                        style={{
+                            padding: '6px 12px',
+                            borderRadius: '8px',
+                            fontSize: '11px',
+                            fontWeight: '700',
+                            background: 'rgba(56, 189, 248, 0.12)',
+                            border: '1px solid rgba(56, 189, 248, 0.3)',
+                            color: '#38bdf8',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        <span>📋</span> Blueprint
+                    </button>
+                )}
+
+                {/* System Status Pill */}
+                <div style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    background: isConnected ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    border: isConnected ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.4)',
+                    padding: '5px 12px', borderRadius: '20px',
+                    fontSize: '11px', fontWeight: '800',
+                    color: isConnected ? '#10b981' : '#f87171'
+                }}>
                     {isConnected && <div className="live-pulse" />}
                     {isConnected ? 'LIVE' : 'DISCONNECTED'}
                 </div>

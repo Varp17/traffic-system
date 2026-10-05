@@ -1,0 +1,20 @@
+{
+  "id": "arxiv_2409.08587v1",
+  "title": "Frequency Tracking Features for Data-Efficient Deep Siren Identification",
+  "authors": [
+    "Stefano Damiano",
+    "Thomas Dietzen",
+    "Toon van Waterschoot"
+  ],
+  "abstract": "The identification of siren sounds in urban soundscapes is a crucial safety aspect for smart vehicles and has been widely addressed by means of neural networks that ensure robustness to both the diversity of siren signals and the strong and unstructured background noise characterizing traffic. Convolutional neural networks analyzing spectrogram features of incoming signals achieve state-of-the-art performance when enough training data capturing the diversity of the target acoustic scenes is available. In practice, data is usually limited and algorithms should be robust to adapt to unseen acoustic conditions without requiring extensive datasets for re-training. In this work, given the harmonic nature of siren signals, characterized by a periodically evolving fundamental frequency, we propose a low-complexity feature extraction method based on frequency tracking using a single-parameter adaptive notch filter. The features are then used to design a small-scale convolutional network suitable for training with limited data. The evaluation results indicate that the proposed model consistently outperforms the traditional spectrogram-based model when limited training data is available, achieves better cross-domain generalization and has a smaller size.",
+  "source": "arXiv",
+  "url": "https://arxiv.org/pdf/2409.08587v1",
+  "doi": null,
+  "published_date": "2024-09-13T07:08:06Z",
+  "extracted_key_findings": [
+    "The identification of siren sounds in urban soundscapes is a crucial safety aspect for smart vehicles and has been widely addressed by means of neural networks that ensure robustness to both the diversity of siren signals and the strong and unstructured background noise characterizing traffic",
+    "Convolutional neural networks analyzing spectrogram features of incoming signals achieve state-of-the-art performance when enough training data capturing the diversity of the target acoustic scenes is available",
+    "In practice, data is usually limited and algorithms should be robust to adapt to unseen acoustic conditions without requiring extensive datasets for re-training"
+  ],
+  "citations_count": 0
+}

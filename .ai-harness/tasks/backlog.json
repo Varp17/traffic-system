@@ -1,0 +1,86 @@
+[
+  {
+    "id": "TSK-002",
+    "title": "YOLOv8 INT8 Edge Quantization & IRC:106 PCU Standardization",
+    "objective": "Implement edge vision object detection running at 80+ FPS using INT8 quantization and convert raw counts to physical road occupancy using IRC:106 Passenger Car Units.",
+    "acceptance_criteria": [
+      "Quantize YOLOv8 neural network to INT8 precision with sub-15ms edge inference.",
+      "Map detections: Car=1.0, Bus/Truck=3.0, Motorcycle=0.5, Bicycle=0.2, Pedestrian=0.1.",
+      "Trigger immediate preemption bypass when Class-1 emergency vehicle detected.",
+      "Verify zero accuracy degradation compared to FP32 baseline."
+    ],
+    "status": "BACKLOG",
+    "current_phase": "requirements",
+    "created_at": "2026-09-27T02:35:00Z",
+    "updated_at": "2026-09-27T02:35:00Z",
+    "completed_at": null,
+    "retries": 0,
+    "assigned_agent": null,
+    "metadata": {
+      "research_query": "YOLOv8 INT8 quantization edge traffic detection passenger car units"
+    }
+  },
+  {
+    "id": "TSK-003",
+    "title": "Webster Delay-Minimizing Adaptive Signal Timing Engine",
+    "objective": "Implement Highway Capacity Manual (HCM) Webster signal optimization computing dynamic critical flow ratios, lost time L=18.0s, optimal cycle C0, and proportional green splits.",
+    "acceptance_criteria": [
+      "Compute critical flow ratios y_i = q_i / S_i and clamp sum Y between [0.10, 0.85].",
+      "Calculate Webster optimal cycle C_0 = (1.5*L + 5) / (1 - Y).",
+      "Enforce safety bounds: minimum green >= 10s, maximum green <= 60s, yellow clearance = 3.0s.",
+      "Demonstrate delay reduction of >= 45% vs fixed-time signalization."
+    ],
+    "status": "BACKLOG",
+    "current_phase": "requirements",
+    "created_at": "2026-09-27T02:35:00Z",
+    "updated_at": "2026-09-27T02:35:00Z",
+    "completed_at": null,
+    "retries": 0,
+    "assigned_agent": null,
+    "metadata": {
+      "research_query": "Webster delay-minimizing adaptive traffic signal timing saturation flow"
+    }
+  },
+  {
+    "id": "TSK-004",
+    "title": "Connected Vehicle V2X SAE J2735 SPaT & MAP Telemetry",
+    "objective": "Broadcast real-time Signal Phase & Timing (SPaT Message 19) and Intersection Geometry (MAP Message 18) for Connected & Automated Vehicles (CAVs) and GLOSA.",
+    "acceptance_criteria": [
+      "Encode SPaT Message 19 with sub-second countdown clocks and phase states.",
+      "Encode MAP Message 18 with 3D lane geometries and stop bar coordinates in WGS-84.",
+      "Broadcast SPaT telemetry over WebSocket and REST endpoints at 10 Hz.",
+      "Comply with ISO 19091 and SAE J2735 standards."
+    ],
+    "status": "BACKLOG",
+    "current_phase": "requirements",
+    "created_at": "2026-09-27T02:35:00Z",
+    "updated_at": "2026-09-27T02:35:00Z",
+    "completed_at": null,
+    "retries": 0,
+    "assigned_agent": null,
+    "metadata": {
+      "research_query": "SAE J2735 SPaT MAP V2X connected vehicles GLOSA"
+    }
+  },
+  {
+    "id": "TSK-005",
+    "title": "Planar Homography Inverse Perspective Mapping (BEV Radar)",
+    "objective": "Transform perspective 2D camera coordinates into a metric ground plane bird's-eye view (BEV) using calibrated 3x3 planar homography transformation matrix.",
+    "acceptance_criteria": [
+      "Calibrate 4-point ground homography matrix H for intersection lanes.",
+      "Calculate true distance-to-stopline in meters independent of perspective foreshortening.",
+      "Integrate with ByteTrack kinematics to calculate true vehicle speeds in km/h.",
+      "Verify metric spatial accuracy within +/- 0.5 meters."
+    ],
+    "status": "BACKLOG",
+    "current_phase": "requirements",
+    "created_at": "2026-09-27T02:35:00Z",
+    "updated_at": "2026-09-27T02:35:00Z",
+    "completed_at": null,
+    "retries": 0,
+    "assigned_agent": null,
+    "metadata": {
+      "research_query": "Planar homography inverse perspective mapping bird eye view traffic tracking"
+    }
+  }
+]
