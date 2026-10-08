@@ -636,17 +636,20 @@ class LoadVideosRequest(BaseModel):
 
 @app.get("/api/videos")
 async def api_get_videos():
-    """Returns catalog of all available local and downloaded videos."""
+    """Returns catalog of all available local and downloaded videos in assets/videos."""
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    video_dir = os.path.join(project_root, "assets", "videos")
     videos = []
-    for f in sorted(os.listdir(project_root)):
-        if f.endswith(".mp4"):
-            fpath = os.path.join(project_root, f)
-            size_mb = round(os.path.getsize(fpath) / (1024 * 1024), 2)
-            videos.append({
-                "filename": f,
-                "size_mb": size_mb,
-            })
+    if os.path.exists(video_dir):
+        for f in sorted(os.listdir(video_dir)):
+            if f.endswith(".mp4"):
+                fpath = os.path.join(video_dir, f)
+                size_mb = round(os.path.getsize(fpath) / (1024 * 1024), 2)
+                videos.append({
+                    "filename": f,
+                    "size_mb": size_mb,
+                    "path": f"assets/videos/{f}"
+                })
     return JSONResponse(videos)
 
 

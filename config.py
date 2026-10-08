@@ -17,8 +17,8 @@ FALLBACK_VIDEO_PATHS = [
 ]
 
 # YOLO model — custom fine-tuned weights for traffic & emergency vehicles
-MODEL_NAME = os.path.join("models", "yolov8_traffic_trained.pt")
-FALLBACK_MODEL_NAME = os.path.join("models", "yolov8n.pt")
+MODEL_NAME = os.path.join("models", "best.pt")
+FALLBACK_MODEL_NAME = os.path.join("models", "best_trained_v12.pt")
 
 # ─── Video Processing ─────────────────────────────────────────────────────────
 FRAME_WIDTH  = 1280
@@ -110,7 +110,7 @@ PORT = 8000
 OPEN_BROWSER_ON_START = True
 
 # ─── Dashboard ────────────────────────────────────────────────────────────────
-DASHBOARD_TITLE = "DevDominators — AI Traffic De-Congestion System"
+DASHBOARD_TITLE = "AI Based Traffic Surveillance System"
 STREAM_JPEG_QUALITY = 75  # JPEG compression quality for streaming (1–100)
 
 # ─── Camera Sources ──────────────────────────────────────────────────────────

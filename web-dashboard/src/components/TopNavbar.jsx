@@ -4,8 +4,6 @@ const VIEW_TITLES = {
   'main-command-hub': { title: 'Live Dashboard', icon: 'dashboard' },
   '4-way-ai-perception': { title: 'AI Perception Stream', icon: 'grid_view' },
   'incidents': { title: 'Incident Feed', icon: 'warning' },
-  'digital-twin-signals': { title: 'Digital Twin & Signals', icon: 'traffic' },
-  'system-architecture-telemetry': { title: 'System Telemetry', icon: 'hub' },
 };
 
 export default function TopNavbar({
@@ -18,6 +16,25 @@ export default function TopNavbar({
   currentView = 'main-command-hub',
 }) {
   const [utcTime, setUtcTime] = useState('');
+  const [videos, setVideos] = useState([]);
+  const [selectedVideo, setSelectedVideo] = useState("assets/videos/north.mp4");
+
+  useEffect(() => {
+    fetch('/api/videos')
+      .then(r => r.json())
+      .then(data => setVideos(data || []))
+      .catch(console.error);
+  }, []);
+
+  const handleVideoChange = (e) => {
+    const path = e.target.value;
+    setSelectedVideo(path);
+    fetch('/api/load-videos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ v_north: path })
+    }).catch(console.error);
+  };
 
   useEffect(() => {
     const updateTime = () => {
@@ -87,6 +104,27 @@ export default function TopNavbar({
             expand_more
           </span>
         </div>
+        <div className="relative flex items-center bg-surface-container/40 border border-white/5 px-3 sm:px-space-md py-1.5 rounded-xl cursor-pointer hover:bg-surface-container hover:border-primary/30 transition-all shrink-0 shadow-sm group">
+          <span className="material-symbols-outlined text-primary text-[17px] mr-2 shrink-0 group-hover:scale-110 transition-transform">videocam</span>
+          <div className="flex flex-col">
+            <span className="font-mono text-[8px] uppercase tracking-wider text-on-surface-variant font-medium leading-none mb-0.5">
+              PRESENTATION VIDEO
+            </span>
+            <select
+              value={selectedVideo}
+              onChange={handleVideoChange}
+              className="bg-transparent text-on-surface text-[12px] font-semibold cursor-pointer outline-none appearance-none pr-5 leading-tight"
+            >
+              {videos.map(v => (
+                <option key={v.path} value={v.path}>{v.filename}</option>
+              ))}
+            </select>
+          </div>
+          <span className="material-symbols-outlined text-on-surface-variant text-[15px] absolute right-2 pointer-events-none group-hover:text-primary transition-colors">
+            expand_more
+          </span>
+        </div>
+
       </div>
 
       {/* Right: Clock & Status */}

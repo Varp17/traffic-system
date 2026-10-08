@@ -74,7 +74,7 @@ export default function FourWayPerceptionView({
               <span>4 RTSP Streams Synchronized @ 60 FPS</span>
             </span>
             <span className="text-outline/40">/</span>
-            <span className="text-primary font-medium">TensorRT YOLOv11 Engine Active (8.4ms)</span>
+            <span className="text-primary font-medium">TensorRT YOLOv8 Engine Active (11.4ms)</span>
             <span className="text-outline/40">/</span>
             <span className="text-on-surface font-bold">Spatial Homography BEV Calibrated</span>
           </div>
