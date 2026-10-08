@@ -33,7 +33,7 @@ client_queues: Dict[WebSocket, asyncio.Queue] = {}
 main_event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
-def init_processor(v_north="north.mp4", v_south="south.mp4", v_east="east.mp4", v_west="west.mp4"):
+def init_processor(v_north="assets/videos/north.mp4", v_south="assets/videos/south.mp4", v_east="assets/videos/east.mp4", v_west="assets/videos/west.mp4"):
     global processor
     processor = VideoProcessor4Way(v_north, v_south, v_east, v_west)
 
@@ -617,7 +617,7 @@ async def api_close_live_camera():
         processor.stop()
     await asyncio.sleep(0.5)
     
-    processor = VideoProcessor4Way("north.mp4", "south.mp4", "east.mp4", "west.mp4")
+    processor = VideoProcessor4Way("assets/videos/north.mp4", "assets/videos/south.mp4", "assets/videos/east.mp4", "assets/videos/west.mp4")
     
     def on_state(state: dict):
         if main_event_loop and main_event_loop.is_running():
@@ -628,10 +628,10 @@ async def api_close_live_camera():
 
 
 class LoadVideosRequest(BaseModel):
-    v_north: str = "north.mp4"
-    v_south: str = "south.mp4"
-    v_east: str = "east.mp4"
-    v_west: str = "west.mp4"
+    v_north: str = "assets/videos/north.mp4"
+    v_south: str = "assets/videos/south.mp4"
+    v_east: str = "assets/videos/east.mp4"
+    v_west: str = "assets/videos/west.mp4"
 
 
 @app.get("/api/videos")

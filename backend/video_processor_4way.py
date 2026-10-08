@@ -98,7 +98,7 @@ class VideoProcessor4Way:
                 
             if os.path.isfile(s_c):
                 return c
-        return 0
+        return None
 
     def start(self, on_state: Optional[Callable] = None):
         self._on_state = on_state

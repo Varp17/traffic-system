@@ -299,7 +299,8 @@ class TrafficAnalyzer:
                 continue
 
             # Real accident confirmation: sustained physical overlap (IoU >= 0.20) or violent deceleration impact
-            if (pair_iou >= 0.20 or (had_decel_spike and one_stopped)) and elapsed >= confirm_time:
+            # Require at least one vehicle to be stopped to prevent false positives from passing vehicles
+            if (pair_iou >= 0.20 or had_decel_spike) and one_stopped and elapsed >= confirm_time:
                 expired_keys.append(pair_key)
                 crash_box = (min(t1.x1, t2.x1), min(t1.y1, t2.y1), max(t1.x2, t2.x2), max(t1.y2, t2.y2)) if (t1 and t2) else (t1.box if t1 else (t2.box if t2 else None))
                 decel_energy = int(abs(getattr(t1, 'speed_kmh', 25.0) * 120) + abs(getattr(t2, 'speed_kmh', 22.0) * 110) + 3950)
@@ -371,27 +372,11 @@ class TrafficAnalyzer:
                         severity="medium",
                         bbox=(track.x1, track.y1, track.x2, track.y2)
                     ), track.lane or "Approach"))
-                stall_key = f"stall_{track.track_id}"
-                if stall_key not in self._pending_collisions:
-                    self._pending_collisions[stall_key] = {
-                        "timestamp": now,
-                        "lane": track.lane,
-                        "type": "stall",
-                    }
-                elif now - self._pending_collisions[stall_key]["timestamp"] >= confirm_time:
-                    self._pending_collisions.pop(stall_key, None)
-                    candidates.append((2, Alert(
-                        alert_type="stall",
-                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) — queue/stall",
-                        lane=track.lane or "Approach",
-                        severity="medium",
-                        bbox=(track.x1, track.y1, track.x2, track.y2)
-                    ), track.lane or "Approach"))
 
         # ── Heuristic 5: Pedestrian very close to vehicle (impact) ────────────
         for det in person_dets:
             for track in vehicle_tracks:
-                if abs(det.cx - track.cx) < 50 and abs(det.cy - track.cy) < 50:
+                if not track.is_stopped and abs(det.cx - track.cx) < 50 and abs(det.cy - track.cy) < 50:
                     ped_crash_box = (min(det.x1, track.x1), min(det.y1, track.y1), max(det.x2, track.x2), max(det.y2, track.y2))
                     candidates.append((9, Alert(
                         alert_type="accident",

@@ -10,16 +10,15 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Primary video — user-provided traffic footage
-VIDEO_PATH = os.path.join(BASE_DIR, "ambulance_emergency_corridor.mp4")
+VIDEO_PATH = os.path.join(BASE_DIR, "assets", "videos", "ambulance_emergency_corridor.mp4")
 FALLBACK_VIDEO_PATHS = [
     os.path.join(BASE_DIR, "..", "yolov8-multiple-vehicle-detection", "tf.mp4"),
     os.path.join(BASE_DIR, "..", "SynchroFlow--Smart-Traffic-Management-System-main", "video3.mp4"),
-    0,  # webcam
 ]
 
 # YOLO model — custom fine-tuned weights for traffic & emergency vehicles
-MODEL_NAME = "yolov8_traffic_trained.pt"
-FALLBACK_MODEL_NAME = "yolov8n.pt"
+MODEL_NAME = os.path.join("models", "yolov8_traffic_trained.pt")
+FALLBACK_MODEL_NAME = os.path.join("models", "yolov8n.pt")
 
 # ─── Video Processing ─────────────────────────────────────────────────────────
 FRAME_WIDTH  = 1280
@@ -93,7 +92,7 @@ AMBULANCE_MIN_AREA_FRAC   = 0.020  # Rejects small vehicles/cars in traffic jams
 AMBULANCE_WHITE_RATIO     = 0.35   # High threshold for emergency vehicle white body surface
 AMBULANCE_EMERGENCY_SCORE = 5.0    # Strict threshold requiring dedicated strobe flashers
 AUDIO_SIREN_ENABLED       = True   # Enable acoustic siren analysis
-AUDIO_SIREN_PATH        = os.path.join(BASE_DIR, "siren.mp3")
+AUDIO_SIREN_PATH        = os.path.join(BASE_DIR, "assets", "audio", "siren.mp3")
 SIREN_FREQ_LOW          = 600    # Hz lower bound of emergency siren sweep
 SIREN_FREQ_HIGH         = 1600   # Hz upper bound of emergency siren sweep
 SIREN_CONFIDENCE_THRESH = 0.40   # Siren detection energy ratio threshold
