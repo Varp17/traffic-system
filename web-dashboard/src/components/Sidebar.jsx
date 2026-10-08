@@ -35,11 +35,11 @@ export default function Sidebar({
             </div>
             {!collapsed && (
               <div className="truncate">
-                <span className="font-headline text-[15px] font-bold tracking-wider uppercase text-primary block leading-none truncate">
-                  AI Traffic
+                <span className="font-headline text-[13px] font-bold tracking-wider uppercase text-primary block leading-none truncate">
+                  AI Based Traffic
                 </span>
                 <span className="font-mono text-[10px] text-on-surface-variant block mt-1 tracking-tight truncate">
-                  DASHBOARD
+                  SURVEILLANCE SYSTEM
                 </span>
               </div>
             )}
