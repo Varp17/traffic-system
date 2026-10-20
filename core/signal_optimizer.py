@@ -211,7 +211,7 @@ class SignalOptimizer:
     def update(self, lane_stats: Dict) -> Dict[str, SignalState]:
         """
         Main optimizer tick executed once per frame.
-        Evaluates emergency overrides, yellow transitions, and phase advancements.
+        Guarantees smooth, monotonic countdowns and eliminates rapid signal fluctuations.
         """
         now = time.time()
         elapsed = now - self._phase_start
@@ -226,7 +226,7 @@ class SignalOptimizer:
                 self.signals[self.current_lane].time_left = max(0.0, self.manual_override_end - now)
                 return self._get_signal_states()
         
-        # ── 2. Visual Emergency Check ───────────────────────────────────────
+        # ── 2. Visual Emergency Check (Debounced with Cooldown) ─────────────
         ambulance_lanes = [
             name for name, stats in lane_stats.items()
             if getattr(stats, 'ambulance_present', False)
@@ -234,37 +234,31 @@ class SignalOptimizer:
         
         cooldown_ok = now > getattr(self, '_emergency_cooldown_until', 0.0)
         if ambulance_lanes and getattr(config, 'AMBULANCE_OVERRIDE', True) and (self.emergency_active or cooldown_ok):
-            self._last_amb_time = now
             target = ambulance_lanes[0]
             if not self.emergency_active or self.emergency_lane != target:
                 self.trigger_emergency(target, source="visual")
         elif self.emergency_active and self.emergency_source == "visual":
-            # Clear if emergency vehicle has cleared and hold duration passed
-            hold_sec = getattr(config, 'EMERGENCY_GREEN_HOLD', 12.0)
-            amb_cleared = (now - getattr(self, '_last_amb_time', 0.0) > 4.5)
-            if not ambulance_lanes and ((now - self.emergency_start > hold_sec) or amb_cleared):
+            hold_sec = getattr(config, 'EMERGENCY_GREEN_HOLD', 20.0)
+            amb_cleared = (now - self.emergency_start > hold_sec) and not ambulance_lanes
+            if amb_cleared:
                 self.clear_emergency()
         
-        # Hard safety invariant: Prevent infinite signal starvation (max 25s preemption hold)
-        max_preempt_sec = getattr(config, 'EMERGENCY_MAX_PREEMPTION', 25.0)
+        # Hard safety invariant: Max 30s emergency hold to prevent permanent starvation
+        max_preempt_sec = getattr(config, 'EMERGENCY_MAX_PREEMPTION', 30.0)
         if self.emergency_active and (now - self.emergency_start > max_preempt_sec):
             self.clear_emergency()
         
         # ── 3. Emergency Active Execution ───────────────────────────────────
         if self.emergency_active:
-            # Handle yellow clearance before emergency green switch
             if self._in_yellow:
                 yellow_elapsed = now - self._yellow_start
                 self.signals[self.current_lane].time_left = max(0.0, config.YELLOW_DURATION - yellow_elapsed)
                 if yellow_elapsed >= config.YELLOW_DURATION:
                     self._in_yellow = False
-                    # Switch all to RED, target to GREEN
                     self._phase_idx = self.PHASE_ORDER.index(self.emergency_lane)
-                    self._activate_phase(self._phase_idx)
-                    self._phase_duration = getattr(config, 'EMERGENCY_GREEN_HOLD', 30.0)
+                    self._activate_phase(self._phase_idx, duration=getattr(config, 'EMERGENCY_GREEN_HOLD', 25.0))
             else:
-                # Keep emergency lane green
-                hold_remaining = max(0.0, (self.emergency_start + getattr(config, 'EMERGENCY_GREEN_HOLD', 30.0)) - now)
+                hold_remaining = max(0.0, (self.emergency_start + getattr(config, 'EMERGENCY_GREEN_HOLD', 25.0)) - now)
                 self.signals[self.current_lane].time_left = hold_remaining
             return self._get_signal_states()
         
@@ -276,16 +270,17 @@ class SignalOptimizer:
             if yellow_elapsed >= config.YELLOW_DURATION:
                 self._in_yellow = False
                 self.signals[self.current_lane].state = SignalState.RED
+                self.signals[self.current_lane].time_left = 0.0
                 self._advance_phase(lane_stats)
             
             return self._get_signal_states()
         
-        # ── 5. Active Green Phase ───────────────────────────────────────────
+        # ── 5. Active Green Phase (Monotonic Countdown, Fixed Duration) ─────
         time_left = max(0.0, self._phase_duration - elapsed)
         self.signals[self.current_lane].time_left = time_left
         
+        # When green countdown completes, transition safely to yellow
         if elapsed >= self._phase_duration:
-            # Initiate safe yellow transition
             self._in_yellow = True
             self._yellow_start = now
             self.signals[self.current_lane].state = SignalState.YELLOW
@@ -294,46 +289,21 @@ class SignalOptimizer:
         return self._get_signal_states()
     
     def _advance_phase(self, lane_stats: Dict):
-        """Select next signal phase enforcing starvation limits and Webster priorities."""
+        """Advance sequentially through the 4-phase cycle (North -> South -> East -> West)."""
         now = time.time()
         
-        # Starvation Prevention (Fairness Invariant)
-        starvation_candidate = None
-        longest_wait = 0.0
-        max_wait_thresh = getattr(config, 'MAX_WAIT_TIME', 60.0)
+        # Sequential cyclic phase advancement (no erratic priority jumping)
+        next_idx = (self._phase_idx + 1) % len(self.PHASE_ORDER)
+        self._phase_idx = next_idx
         
-        for name, sig in self.signals.items():
-            if name == self.current_lane:
-                continue
-            wait = now - sig.last_green
-            if wait > max_wait_thresh and wait > longest_wait:
-                starvation_candidate = name
-                longest_wait = wait
+        # Calculate optimal green time ONCE at phase initiation
+        stats = lane_stats.get(self.PHASE_ORDER[next_idx]) if lane_stats else None
+        green_time = self.compute_green_time(stats, lane_stats)
         
-        if starvation_candidate:
-            next_lane = starvation_candidate
-            self._phase_idx = self.PHASE_ORDER.index(next_lane)
-        else:
-            # Priority-based dispatch from remaining phases
-            remaining = [n for n in self.PHASE_ORDER if n != self.current_lane]
-            
-            def score_fn(name):
-                s = lane_stats.get(name)
-                return s.priority_score if s and hasattr(s, 'priority_score') else 0.0
-            
-            best_lane = max(remaining, key=score_fn)
-            self._phase_idx = self.PHASE_ORDER.index(best_lane)
-        
-        self._activate_phase(self._phase_idx)
-        
-        # Compute optimal green duration for newly activated phase
-        stats = lane_stats.get(self.current_lane)
-        if stats:
-            self._phase_duration = self.compute_green_time(stats, lane_stats)
-        
+        self._activate_phase(self._phase_idx, duration=green_time)
         self.total_cycles += 1
     
-    def _activate_phase(self, idx: int):
+    def _activate_phase(self, idx: int, duration: Optional[float] = None):
         """Activate signal phase (sets active to GREEN, others to RED)."""
         lane = self.PHASE_ORDER[idx]
         now = time.time()
@@ -342,10 +312,17 @@ class SignalOptimizer:
             sig.state = SignalState.RED
             sig.time_left = 0.0
         
+        min_g = float(getattr(config, 'MIN_GREEN_TIME', 12.0))
+        max_g = float(getattr(config, 'MAX_GREEN_TIME', 45.0))
+        dur = duration if duration is not None else getattr(config, 'BASE_GREEN_TIME', 15.0)
+        dur = float(max(min_g, min(max_g, dur)))
+        
         self.signals[lane].state      = SignalState.GREEN
         self.signals[lane].last_green = now
+        self.signals[lane].time_left  = dur
         self._phase_start             = now
-        self._phase_duration          = getattr(config, 'BASE_GREEN_TIME', 10.0)
+        self._phase_duration          = dur
+        self._in_yellow               = False
         
         self.phase_history.append({
             "lane": lane,
@@ -360,45 +337,44 @@ class SignalOptimizer:
         return {name: sig.state for name, sig in self.signals.items()}
     
     def update_phase_duration(self, lane_stats: Dict):
-        """Update green duration for the current active phase."""
-        stats = lane_stats.get(self.current_lane)
-        if stats:
-            self._phase_duration = self.compute_green_time(stats, lane_stats)
+        """No-op during active phase to maintain locked, non-fluctuating green countdown."""
+        pass
 
     def draw_signal_panel(self, frame, x: int = 10, y: int = 10) -> None:
-        """Render compact signal status panel on the frame."""
+        """Render compact signal status panel on the frame with high contrast colors."""
         import cv2
         COLORS = {
-            SignalState.GREEN:  (0, 255, 0),
-            SignalState.YELLOW: (0, 200, 255),
-            SignalState.RED:    (0, 0, 255),
+            SignalState.GREEN:  (0, 230, 80),
+            SignalState.YELLOW: (0, 215, 255),
+            SignalState.RED:    (30, 30, 240),
         }
-        panel_w, panel_h = 220, 150
-        cv2.rectangle(frame, (x, y), (x + panel_w, y + panel_h), (20, 20, 20), -1)
-        cv2.rectangle(frame, (x, y), (x + panel_w, y + panel_h), (80, 80, 80), 1)
+        panel_w, panel_h = 205, 128
+        cv2.rectangle(frame, (x, y), (x + panel_w, y + panel_h), (18, 20, 24), -1)
+        cv2.rectangle(frame, (x, y), (x + panel_w, y + panel_h), (60, 65, 75), 1)
         
         cv2.putText(frame, f"ATSC: WEBSTER (Co={self.webster_cycle_length:.0f}s)",
                     (x + 10, y + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 220, 255), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 220, 255), 1, cv2.LINE_AA)
         
-        for i, (name, sig) in enumerate(self.signals.items()):
-            row_y = y + 36 + i * 24
+        for i, name in enumerate(self.PHASE_ORDER):
+            sig = self.signals[name]
+            row_y = y + 36 + i * 22
             color = COLORS[sig.state]
-            cv2.circle(frame, (x + 16, row_y), 7, color, -1)
+            cv2.circle(frame, (x + 16, row_y), 6, color, -1, cv2.LINE_AA)
             cv2.putText(frame, f"{name}:", (x + 30, row_y + 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1, cv2.LINE_AA)
             
             state_text = sig.state.value.upper()
             if sig.state in (SignalState.GREEN, SignalState.YELLOW):
                 state_text += f" {sig.time_left:.0f}s"
             cv2.putText(frame, state_text, (x + 85, row_y + 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1, cv2.LINE_AA)
         
         if self.emergency_active:
             cv2.rectangle(frame, (x, y + panel_h + 2), (x + panel_w, y + panel_h + 24), (0, 0, 220), -1)
             cv2.putText(frame, f"EMERGENCY: {self.emergency_lane} ({self.emergency_source.upper()})",
                         (x + 4, y + panel_h + 17),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
 
     def get_metrics(self) -> Dict:
         """Return serializable signal telemetry for WebSocket and REST APIs."""

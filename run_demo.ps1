@@ -10,8 +10,6 @@ Set-Location $Root
 
 $Venv = Join-Path $Root ".venv"
 $Activate = Join-Path $Venv "Scripts\Activate.ps1"
-$Ui = Join-Path $Root "ui"
-$Art = "$env:USERPROFILE\.gemini\antigravity-ide\brain\ab77ad42-3304-484c-b456-0dbb78f45d5d"
 
 # --- 1️⃣ Activate (or create) the venv ------------------------------------
 if (-Not (Test-Path $Venv)) {
@@ -45,13 +43,8 @@ if ($needsInstall) {
     Write-Host "Packages already up-to-date - skipping pip install."
 }
 
-# --- 3️⃣ Copy placeholder images (once) ----------------------------------
-$srcCam = Join-Path $Art "dummy_cam1_1791111129585.jpg"
-$dstCam = Join-Path $Ui "dummy_cam1.jpg"
-$srcViol = Join-Path $Art "violation1_1791111151233.jpg"
-$dstViol = Join-Path $Ui "violation1.jpg"
-if ((Test-Path $srcCam) -and (-not (Test-Path $dstCam))) { Copy-Item $srcCam $dstCam }
-if ((Test-Path $srcViol) -and (-not (Test-Path $dstViol))) { Copy-Item $srcViol $dstViol }
+# --- 3️⃣ Environment ready ----------------------------------------------
+Write-Host "Virtual environment validated."
 
 # --- 4️⃣ Launch the Complete Real-World AI 4-Way Traffic Suite ---
 Write-Host "Launching Complete UK-ITCS AI Vision Suite & 4-Way Real-Time ATSC System..."

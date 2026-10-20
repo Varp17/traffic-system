@@ -192,6 +192,33 @@ async def api_incidents():
     return JSONResponse([])
 
 
+@app.get("/api/detections")
+async def api_detections():
+    """Returns isolated cropped bounding-box images for current detected vehicles/pedestrians."""
+    if processor:
+        crops = processor.get_recent_detections(limit=40)
+        return JSONResponse({"detections": crops, "count": len(crops)})
+    return JSONResponse({"detections": [], "count": 0})
+
+
+@app.get("/api/detection_stats")
+async def api_detection_stats():
+    """Returns real-time inference FPS, vehicle counts, PCU, model metadata, and camera feeds."""
+    if processor:
+        return JSONResponse(processor.get_detection_stats())
+    return JSONResponse({
+        "fps": 0.0,
+        "frame_count": 0,
+        "total_pcu": 0.0,
+        "class_counts": {},
+        "model": "YOLOv8 Traffic Trained",
+        "video_sources": [],
+        "detection_count": 0,
+        "incident_count": 0,
+        "running": False
+    })
+
+
 @app.get("/api/v2x/spat")
 async def api_v2x_spat():
     """Return standard SAE J2735 Signal Phase and Timing (SPaT) message."""

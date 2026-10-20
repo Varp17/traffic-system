@@ -17,15 +17,21 @@ FALLBACK_VIDEO_PATHS = [
 ]
 
 # YOLO model — custom fine-tuned weights for traffic & emergency vehicles
-MODEL_NAME = os.path.join("models", "best.pt")
-FALLBACK_MODEL_NAME = os.path.join("models", "best_trained_v12.pt")
+USER_BEST_MODEL = r"C:\Users\HP\Downloads\model\model\best (12).pt"
+if os.path.exists(USER_BEST_MODEL):
+    MODEL_NAME = USER_BEST_MODEL
+elif os.path.exists(os.path.join(BASE_DIR, "models", "best (12).pt")):
+    MODEL_NAME = os.path.join(BASE_DIR, "models", "best (12).pt")
+else:
+    MODEL_NAME = os.path.join(BASE_DIR, "models", "best.pt")
+FALLBACK_MODEL_NAME = os.path.join(BASE_DIR, "models", "best_trained_v12.pt")
 
 # ─── Video Processing ─────────────────────────────────────────────────────────
 FRAME_WIDTH  = 1280
 FRAME_HEIGHT = 720
 TARGET_FPS   = 30
 PROCESS_EVERY_N_FRAMES = 2      # Skip every other frame for speed
-CONFIDENCE_THRESHOLD   = 0.30  # Detection confidence minimum
+CONFIDENCE_THRESHOLD   = 0.50  # High-precision threshold: eliminates false detections and pavement noise
 
 # ─── Vehicle & Agent Classes (Label-Driven Single Source of Truth) ───────────
 VEHICLE_CLASSES = {
@@ -33,6 +39,8 @@ VEHICLE_CLASSES = {
     "motorcycle": 0.5,
     "bus":        3.0,
     "truck":      3.0,
+    "rickshaw":   0.8,  # Indian 3-Wheeler Auto-Rickshaw (IRC:106 / Indo-HCM)
+    "auto":       0.8,
     "bicycle":    0.2,
     "person":     0.1,  # Pedestrian
     "ambulance":  0.0,  # Emergency vehicle: triggers immediate preemption override
@@ -46,6 +54,8 @@ PCU_WEIGHTS = {
     "motorcycle": 0.5,
     "bus":        3.0,
     "truck":      3.0,
+    "rickshaw":   0.8,  # Indian Auto-Rickshaw (3-Wheeler) standard PCU
+    "auto":       0.8,
     "bicycle":    0.2,
     "person":     0.1,  # Used for pedestrian crossing occupancy
     "ambulance":  0.0,  # Emergency vehicle: triggers immediate preemption override
@@ -70,12 +80,12 @@ LANE_POLYGONS_4WAY = {
 }
 
 # ─── Signal Timing & Webster ATSC Parameters ─────────────────────────────────
-BASE_GREEN_TIME    = 10   # Minimum green time in seconds
-GREEN_PER_VEHICLE  = 2    # Extra seconds per vehicle in queue
-MAX_GREEN_TIME     = 60   # Maximum green time cap to prevent starvation
-MIN_GREEN_TIME     = 10   # Minimum green time (preserves pedestrian clearance)
+BASE_GREEN_TIME    = 15   # Standard base green time in seconds (solid, non-fluctuating)
+GREEN_PER_VEHICLE  = 1.5  # Extra seconds per vehicle in queue
+MAX_GREEN_TIME     = 45   # Maximum green time cap to prevent starvation
+MIN_GREEN_TIME     = 12   # Guaranteed minimum green time (prevents micro-cycling & rapid switching)
 MAX_WAIT_TIME      = 60   # Force green if a lane has waited this long (fairness threshold)
-YELLOW_DURATION    = 3    # Yellow light transition duration in seconds
+YELLOW_DURATION    = 3    # Standard yellow clearance duration in seconds
 
 # Webster's Optimal Cycle Length & Green Split Constants
 WEBSTER_ENABLED            = True   # Use Webster's Delay Minimization algorithm
@@ -87,8 +97,8 @@ WEBSTER_MAX_CYCLE           = 120.0  # Upper bound on cycle length (seconds)
 # ─── Emergency Preemption & Audio Siren Detection ────────────────────────────
 AMBULANCE_OVERRIDE        = True   # Enable visual emergency preemption
 OPTICAL_AMBULANCE_HEURISTIC_ENABLED = False # In heavy traffic, do not force-reclassify normal white cars as ambulances
-AMBULANCE_CONFIDENCE_THRESHOLD = 0.55 # Minimum neural network confidence for emergency vehicle classification
-AMBULANCE_MIN_AREA_FRAC   = 0.020  # Rejects small vehicles/cars in traffic jams; ambulances are larger vehicles
+AMBULANCE_CONFIDENCE_THRESHOLD = 0.62 # Calibrated neural confidence threshold: detects genuine Force Traveller ambulance, strictly rejects false bus/car classifications
+AMBULANCE_MIN_AREA_FRAC   = 0.015  # Rejects small vehicles/cars in traffic jams; ambulances are larger vehicles
 AMBULANCE_WHITE_RATIO     = 0.35   # High threshold for emergency vehicle white body surface
 AMBULANCE_EMERGENCY_SCORE = 5.0    # Strict threshold requiring dedicated strobe flashers
 AUDIO_SIREN_ENABLED       = True   # Enable acoustic siren analysis
@@ -99,9 +109,10 @@ SIREN_CONFIDENCE_THRESH = 0.40   # Siren detection energy ratio threshold
 EMERGENCY_GREEN_HOLD    = 30.0   # Minimum duration for green corridor hold (seconds)
 
 # ─── Accident & Traffic Anomaly Detection ────────────────────────────────────
+ENABLE_COLLISION_ALERTS = True   # Enable collision & accident alerts for real-time safety preemption
 ACCIDENT_STOP_THRESHOLD = 2.0   # Seconds a vehicle is stopped before flagged
-ACCIDENT_OVERLAP_IOU    = 0.20  # IoU threshold to flag collision (calibrated to prevent false alarms on queuing traffic)
-COLLISION_CONFIRM_TIME  = 1.5   # Seconds vehicles must remain immobile post-impact
+ACCIDENT_OVERLAP_IOU    = 0.32  # Realistic physical impact overlap threshold (rejects normal queue proximity)
+COLLISION_CONFIRM_TIME  = 2.0   # 2.0s sustained confirmation time for genuine collisions
 ILLEGAL_PARKING_TIME    = 15.0  # Seconds stationary in moving lane before parking/stall alert
 
 # ─── Backend Server ───────────────────────────────────────────────────────────

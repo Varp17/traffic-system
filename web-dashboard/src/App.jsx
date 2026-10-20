@@ -3,11 +3,11 @@ import Sidebar from './components/Sidebar';
 import TopNavbar from './components/TopNavbar';
 import MainCommandHubView from './components/MainCommandHubView';
 import FourWayPerceptionView from './components/FourWayPerceptionView';
+import DetectionScannerView from './components/DetectionScannerView';
 import IncidentMonitor from './components/IncidentMonitor';
 
 function App() {
   const [currentView, setCurrentView] = useState('main-command-hub');
-  const [selectedIntersection, setSelectedIntersection] = useState('j04');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
@@ -139,42 +139,50 @@ function App() {
       >
         {/* Unified Top Navigation & Status Bar */}
         <TopNavbar
-          selectedIntersection={selectedIntersection}
-          setSelectedIntersection={setSelectedIntersection}
           emergencyActive={isEmergency}
           onToggleSidebar={() => setMobileSidebarOpen((prev) => !prev)}
           onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
           sidebarCollapsed={sidebarCollapsed}
           currentView={currentView}
+          isConnected={isConnected}
+          uptime={uptime}
         />
 
         {/* Main View Port */}
-        <main className="w-full pt-16 pb-24 bg-surface px-3 sm:px-gutter flex-1 overflow-y-auto">
-          <div className="pt-space-md">
-            {currentView === 'incidents' && (
-              <IncidentMonitor />
-            )}
+        <main className="w-full pt-20 pb-12 bg-surface px-4 sm:px-6 flex-1 overflow-y-auto">
+          {/* View 1: Main Command Hub */}
+          {(currentView === 'main-command-hub' || currentView === 'dashboard') && (
+            <MainCommandHubView
+              onSwitchView={(viewId) => setCurrentView(viewId)}
+              metrics={state.metrics}
+              signals={state.signals}
+              emergencyActive={isEmergency}
+              onTriggerEmergency={handleTriggerEmergency}
+            />
+          )}
 
-            {(currentView === 'main-command-hub' || currentView === 'dashboard') && (
-              <MainCommandHubView
-                onSelectIntersection={(jId) => setSelectedIntersection(jId)}
-                onSwitchView={(viewId) => setCurrentView(viewId)}
-                metrics={state.metrics}
-                signals={state.signals}
-                emergencyActive={isEmergency}
-                onTriggerEmergency={handleTriggerEmergency}
-              />
-            )}
+          {/* View 2: 4-Way AI Perception */}
+          {currentView === '4-way-ai-perception' && (
+            <FourWayPerceptionView
+              onSwitchView={(viewId) => setCurrentView(viewId)}
+              signals={state.signals}
+              emergencyActive={isEmergency}
+            />
+          )}
 
-            {currentView === '4-way-ai-perception' && (
-              <FourWayPerceptionView
-                selectedIntersection={selectedIntersection}
-                onSwitchView={(viewId) => setCurrentView(viewId)}
-                signals={state.signals}
-                emergencyActive={isEmergency}
-              />
-            )}
-          </div>
+          {/* View 3: Detection Matrix & Radar */}
+          {currentView === 'detection-scanner' && (
+            <DetectionScannerView
+              activeTargets={state.active_targets || []}
+              audioSiren={state.audio_siren || {}}
+              metrics={state.metrics || {}}
+            />
+          )}
+
+          {/* View 4: Incident Feed */}
+          {currentView === 'incidents' && (
+            <IncidentMonitor />
+          )}
         </main>
       </div>
     </div>

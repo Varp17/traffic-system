@@ -1,147 +1,99 @@
 import React, { useState, useEffect } from 'react';
 
 const VIEW_TITLES = {
-  'main-command-hub': { title: 'Live Dashboard', icon: 'dashboard' },
-  '4-way-ai-perception': { title: 'AI Perception Stream', icon: 'grid_view' },
-  'incidents': { title: 'Incident Feed', icon: 'warning' },
+  'main-command-hub': { title: 'Main Command Hub', subtitle: '4-Way Intersection Overview', icon: 'dashboard', tag: 'OVERVIEW' },
+  'dashboard': { title: 'Main Command Hub', subtitle: '4-Way Intersection Overview', icon: 'dashboard', tag: 'OVERVIEW' },
+  '4-way-ai-perception': { title: '4-Way AI Perception', subtitle: 'Live Multi-Camera Stream', icon: 'grid_view', tag: '4-CAM AI' },
+  'detection-scanner': { title: 'Detection Matrix & Radar', subtitle: '360° Tactical Radar & Target Matrix', icon: 'radar', tag: 'AI RADAR' },
+  'incidents': { title: 'Incident Feed', subtitle: 'Safety Anomalies & Emergency Events', icon: 'warning', tag: 'INCIDENTS' },
 };
 
 export default function TopNavbar({
-  selectedIntersection,
-  setSelectedIntersection,
   emergencyActive,
   onToggleSidebar,
-  onToggleCollapse,
   sidebarCollapsed = false,
   currentView = 'main-command-hub',
+  isConnected = false,
+  uptime = '',
 }) {
-  const [utcTime, setUtcTime] = useState('');
-  const [videos, setVideos] = useState([]);
-  const [selectedVideo, setSelectedVideo] = useState("assets/videos/north.mp4");
-
-  useEffect(() => {
-    fetch('/api/videos')
-      .then(r => r.json())
-      .then(data => setVideos(data || []))
-      .catch(console.error);
-  }, []);
-
-  const handleVideoChange = (e) => {
-    const path = e.target.value;
-    setSelectedVideo(path);
-    fetch('/api/load-videos', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ v_north: path })
-    }).catch(console.error);
-  };
+  const [timeStr, setTimeStr] = useState('');
 
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
-      setUtcTime(now.toTimeString().split(' ')[0] + ' UTC');
+      setTimeStr(now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
 
-  const currentViewInfo = VIEW_TITLES[currentView] || { title: 'Dashboard', icon: 'traffic' };
+  const currentViewInfo = VIEW_TITLES[currentView] || {
+    title: 'Main Command Hub',
+    subtitle: 'Traffic Operations',
+    icon: 'traffic',
+    tag: 'SYSTEM',
+  };
 
   return (
     <header
       className={`fixed top-0 left-0 ${
         sidebarCollapsed ? 'lg:left-16' : 'lg:left-64'
-      } right-0 h-16 bg-surface-container-lowest/70 backdrop-blur-2xl z-40 flex items-center justify-between px-3 sm:px-space-md lg:px-space-lg border-b border-white/5 shadow-lg transition-all duration-300`}
+      } right-0 h-16 bg-surface-dim/95 backdrop-blur-md z-40 flex items-center justify-between px-4 sm:px-6 border-b border-outline-variant/30 shadow-md transition-all duration-300`}
     >
-      {/* Left: Sidebar Toggle + Active View Breadcrumb & Intersection Selector */}
-      <div className="flex items-center gap-2 sm:gap-space-sm min-w-0">
+      {/* Left: Mobile Toggle & Page Title */}
+      <div className="flex items-center gap-3 min-w-0">
         <button
           onClick={onToggleSidebar}
-          className="lg:hidden p-1.5 rounded-lg bg-surface-container/50 text-on-surface hover:bg-surface-container hover:shadow-md transition-all shrink-0 border border-white/5"
+          className="lg:hidden p-2 rounded-lg bg-surface-container text-on-surface-variant hover:text-on-surface transition-colors"
+          title="Open Menu"
         >
           <span className="material-symbols-outlined text-[20px]">menu</span>
         </button>
 
-        {onToggleCollapse && (
-          <button
-            onClick={onToggleCollapse}
-            className="hidden lg:flex p-1.5 rounded-lg bg-surface-container/50 text-on-surface hover:bg-surface-container hover:shadow-md transition-all shrink-0 border border-white/5"
-          >
-            <span className="material-symbols-outlined text-[20px]">
-              {sidebarCollapsed ? 'menu_open' : 'view_sidebar'}
+        <div className="flex items-center gap-2.5 truncate">
+          <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/30 flex items-center justify-center shrink-0">
+            <span className="material-symbols-outlined text-primary text-[20px]">
+              {currentViewInfo.icon}
             </span>
-          </button>
-        )}
-
-        <div className="hidden md:flex items-center gap-2 bg-surface-container/40 px-3 py-1.5 rounded-xl border border-white/5 shrink-0 shadow-inner">
-          <span className="material-symbols-outlined text-primary text-[18px]">
-            {currentViewInfo.icon}
-          </span>
-          <span className="font-headline text-[12px] font-bold tracking-wider uppercase text-on-surface whitespace-nowrap">
-            {currentViewInfo.title}
-          </span>
-        </div>
-
-        <div className="relative flex items-center bg-surface-container/40 border border-white/5 px-3 sm:px-space-md py-1.5 rounded-xl cursor-pointer hover:bg-surface-container hover:border-primary/30 transition-all shrink-0 shadow-sm group">
-          <span className="material-symbols-outlined text-primary text-[17px] mr-2 shrink-0 group-hover:scale-110 transition-transform">traffic</span>
-          <div className="flex flex-col">
-            <span className="font-mono text-[8px] uppercase tracking-wider text-on-surface-variant font-medium leading-none mb-0.5">
-              JUNCTION
-            </span>
-            <select
-              value={selectedIntersection}
-              onChange={(e) => setSelectedIntersection(e.target.value)}
-              className="bg-transparent text-on-surface text-[12px] font-semibold cursor-pointer outline-none appearance-none pr-5 leading-tight"
-            >
-              <option value="j04">Junction 04: Grand Ave & 5th St</option>
-              <option value="j05">Junction 05: Metro Blvd & 8th St</option>
-              <option value="j02">Junction 02: Riverside & King Way</option>
-              <option value="j07">Junction 07: Central Square Cross</option>
-            </select>
           </div>
-          <span className="material-symbols-outlined text-on-surface-variant text-[15px] absolute right-2 pointer-events-none group-hover:text-primary transition-colors">
-            expand_more
-          </span>
-        </div>
-        <div className="relative flex items-center bg-surface-container/40 border border-white/5 px-3 sm:px-space-md py-1.5 rounded-xl cursor-pointer hover:bg-surface-container hover:border-primary/30 transition-all shrink-0 shadow-sm group">
-          <span className="material-symbols-outlined text-primary text-[17px] mr-2 shrink-0 group-hover:scale-110 transition-transform">videocam</span>
-          <div className="flex flex-col">
-            <span className="font-mono text-[8px] uppercase tracking-wider text-on-surface-variant font-medium leading-none mb-0.5">
-              PRESENTATION VIDEO
+          <div className="truncate">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-on-surface tracking-tight truncate">
+                {currentViewInfo.title}
+              </span>
+              <span className="hidden sm:inline-block font-mono text-[9px] px-1.5 py-0.5 rounded font-bold bg-primary/20 text-primary border border-primary/30">
+                {currentViewInfo.tag}
+              </span>
+            </div>
+            <span className="hidden md:block text-[11px] text-on-surface-variant truncate">
+              {currentViewInfo.subtitle}
             </span>
-            <select
-              value={selectedVideo}
-              onChange={handleVideoChange}
-              className="bg-transparent text-on-surface text-[12px] font-semibold cursor-pointer outline-none appearance-none pr-5 leading-tight"
-            >
-              {videos.map(v => (
-                <option key={v.path} value={v.path}>{v.filename}</option>
-              ))}
-            </select>
           </div>
-          <span className="material-symbols-outlined text-on-surface-variant text-[15px] absolute right-2 pointer-events-none group-hover:text-primary transition-colors">
-            expand_more
-          </span>
         </div>
-
       </div>
 
-      {/* Right: Clock & Status */}
-      <div className="flex items-center gap-3 sm:gap-space-md shrink-0">
+      {/* Right: Actions, Emergency & Clock */}
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         {emergencyActive && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-error/10 text-error border border-error/30 animate-pulse shadow-glow">
-            <span className="material-symbols-outlined text-[16px]">e911_emergency</span>
-            <span className="font-mono text-[10px] font-bold uppercase tracking-wider">
-              EMERGENCY ACTIVE
-            </span>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-error-container/30 text-error border border-error/50 animate-pulse text-xs font-bold">
+            <span>🚑</span>
+            <span className="hidden sm:inline">AMBULANCE PRIORITY</span>
+            <span className="sm:hidden">EVP</span>
           </div>
         )}
-        <div className="flex items-center gap-1.5 bg-surface-container/40 px-3 py-1.5 rounded-xl border border-white/5 shadow-inner">
-          <span className="material-symbols-outlined text-primary/70 text-[15px]">schedule</span>
-          <div className="font-mono text-[11px] text-on-surface font-semibold tracking-wide">
-            {utcTime}
-          </div>
+
+        {/* Feeds Active & WS Badge */}
+        <div className="hidden sm:flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-surface-container border border-outline-variant/30 text-xs text-on-surface-variant font-mono">
+          <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-secondary animate-pulse' : 'bg-error'}`}></span>
+          <span>{isConnected ? '4 Feeds Online' : 'Connecting...'}</span>
+          {uptime ? <span className="text-[10px] text-on-surface-variant/70">({uptime})</span> : null}
+        </div>
+
+        {/* Real Clock */}
+        <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface-container border border-outline-variant/30 text-xs text-on-surface-variant font-mono">
+          <span className="material-symbols-outlined text-[15px] text-on-surface-variant">schedule</span>
+          <span>{timeStr}</span>
         </div>
       </div>
     </header>

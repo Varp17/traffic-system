@@ -27,7 +27,7 @@ def parse_args():
     parser.add_argument("--v_north", type=str, default="assets/videos/north.mp4", help="Path to North video")
     parser.add_argument("--v_south", type=str, default="assets/videos/south.mp4", help="Path to South video")
     parser.add_argument("--v_east", type=str, default="assets/videos/east.mp4", help="Path to East video")
-    parser.add_argument("--v_west", type=str, default="assets/videos/west1.mp4", help="Path to West video (emergency corridor)")
+    parser.add_argument("--v_west", type=str, default="assets/videos/west.mp4", help="Path to West video")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Server host")
     parser.add_argument("--no-browser", action="store_true", help="Don't open browser")
@@ -43,7 +43,7 @@ def main():
     from backend import main_4way
     main_4way.init_processor(args.v_north, args.v_south, args.v_east, args.v_west)
     
-    uvicorn.run(main_4way.app, host=args.host, port=args.port, log_level="info", ws_ping_interval=20.0, ws_ping_timeout=20.0)
+    uvicorn.run(main_4way.app, host=args.host, port=args.port, log_level="info", ws_ping_interval=None, ws_ping_timeout=None)
 
 if __name__ == "__main__":
     main()

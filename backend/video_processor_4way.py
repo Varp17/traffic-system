@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from typing import Callable, Optional, Dict, List, Tuple
+from collections import deque
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -51,7 +52,7 @@ class VideoProcessor4Way:
         self.frame_height = frame_height or config.FRAME_HEIGHT
         
         self.detector       = Detector()
-        self.tracker        = CentroidTracker(max_disappeared=10, max_distance=110)
+        self.tracker        = CentroidTracker(max_disappeared=35, max_distance=110)
         self.lane_mgr       = LaneManager(self.frame_width, self.frame_height, polygons=LANE_POLYGONS_4WAY)
         self.analyzer       = TrafficAnalyzer()
         self.optimizer      = SignalOptimizer()
@@ -79,13 +80,45 @@ class VideoProcessor4Way:
         self.latest_metrics: Dict = {}
         self.latest_alerts:  List = []
         self.latest_signals: Dict = {}
-        self.incident_history: List[Dict] = self._seed_initial_incidents()
+        self.incident_history: List[Dict] = []
         self._last_incident_time: float = 0.0
         self._last_amb_logged: Dict[str, float] = {}
         self._on_state: Optional[Callable] = None
+        
+        # Real-time cropped detection ring buffer for UI scanner
+        self.crop_ring: deque = deque(maxlen=80)
+        self.inference_fps: float = 0.0
+        self.detection_frame_count: int = 0
+        self._last_state_push: float = 0.0
+        self.class_counts: Dict[str, int] = {}
+        self._fps_t0 = time.time()
+        self._fps_fc = 0
+
+    def _crop_b64(self, frame: np.ndarray, x1: int, y1: int, x2: int, y2: int, pad: int = 6) -> str:
+        """Extract and upscale isolated bounding box for UI detection gallery."""
+        try:
+            h, w = frame.shape[:2]
+            cx1, cy1 = max(0, x1 - pad), max(0, y1 - pad)
+            cx2, cy2 = min(w, x2 + pad), min(h, y2 + pad)
+            crop = frame[cy1:cy2, cx1:cx2]
+            if crop.size == 0:
+                return ""
+            ch, cw = crop.shape[:2]
+            if max(ch, cw) < 120:
+                scale = 120.0 / max(ch, cw)
+                crop = cv2.resize(crop, (int(cw * scale), int(ch * scale)), interpolation=cv2.INTER_LINEAR)
+            _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            return base64.b64encode(buf.tobytes()).decode("utf-8")
+        except Exception:
+            return ""
 
     def _resolve_video(self, path=None) -> str:
-        candidates = [path, config.VIDEO_PATH] + config.FALLBACK_VIDEO_PATHS
+        candidates = [
+            path,
+            os.path.join(config.BASE_DIR, "assets", "videos", str(path)) if path else None,
+            os.path.join(config.BASE_DIR, str(path)) if path else None,
+            config.VIDEO_PATH
+        ] + config.FALLBACK_VIDEO_PATHS
         for c in candidates:
             if c is None:
                 continue
@@ -125,32 +158,33 @@ class VideoProcessor4Way:
     def draw_quadrant_signals(self, frame, optimizer_signals, qw, qh, lane_stats: Dict):
         """Render glowing signal states with countdown badges and PCU counts per quadrant."""
         positions = {
-            "North": (20, 50),
-            "South": (qw + 20, 50),
-            "East":  (20, qh + 40),
-            "West":  (qw + 20, qh + 40),
+            "North": (225, 48),    # Positioned cleanly to the right of the Webster ATSC panel
+            "South": (qw + 20, 48),
+            "East":  (20, qh + 45),
+            "West":  (qw + 20, qh + 45),
         }
         STATE_COLORS = {
-            "green":  (0, 230, 110),
-            "yellow": (0, 210, 255),
-            "red":    (80, 80, 80),
+            "green":  (0, 230, 80),    # Vibrant emerald green
+            "yellow": (0, 215, 255),   # Vibrant amber yellow
+            "red":    (30, 30, 240),   # Vibrant traffic signal red
         }
         for lane_name, pos in positions.items():
             if lane_name not in optimizer_signals:
                 continue
             sig = optimizer_signals[lane_name]
             state_str = sig.state.value
-            color = STATE_COLORS.get(state_str, (80, 80, 80))
+            color = STATE_COLORS.get(state_str, (30, 30, 240))
             x, y = pos
             
             # Background Card
-            cv2.rectangle(frame, (x - 8, y - 22), (x + 160, y + 26), (15, 15, 15), -1)
-            cv2.rectangle(frame, (x - 8, y - 22), (x + 160, y + 26), (70, 70, 70), 1)
+            cv2.rectangle(frame, (x - 8, y - 22), (x + 160, y + 26), (15, 17, 22), -1)
+            cv2.rectangle(frame, (x - 8, y - 22), (x + 160, y + 26), (65, 70, 85), 1)
             
-            # Traffic Light Circle
-            cv2.circle(frame, (x + 12, y), 10, color, -1)
+            # Traffic Light Circle (Glowing Filled Circle)
+            cv2.circle(frame, (x + 12, y), 9, color, -1, cv2.LINE_AA)
+            cv2.circle(frame, (x + 12, y), 11, color, 1, cv2.LINE_AA)
             
-            # State Text & Time Left
+            # State Text & Monotonic Time Left
             time_txt = f" {sig.time_left:.0f}s" if state_str in ("green", "yellow") else ""
             cv2.putText(frame, f"{state_str.upper()}{time_txt}", (x + 30, y + 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
@@ -160,32 +194,33 @@ class VideoProcessor4Way:
             if stats:
                 subtext = f"{stats.vehicle_count}v | {stats.pcu_count:.1f} PCU"
                 cv2.putText(frame, subtext, (x + 30, y + 20),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (190, 195, 205), 1, cv2.LINE_AA)
 
     def draw_incidents(self, frame: np.ndarray, alerts: List[Dict]):
-        """Render high-contrast tactical bounding boxes, collision impact brackets, and alert banners."""
+        """Render crisp, non-flickering incident markers on verified anomalies."""
         if not alerts:
             return
         fh, fw = frame.shape[:2]
-        now = time.time()
-        pulse = int(abs(np.sin(now * 5.0)) * 255)
         drawn_lanes = set()
-        
-        for a in alerts[-6:]:
+
+        for a in alerts[-4:]:
             a_type = str(a.get("type", "")).lower()
             a_msg = str(a.get("message", ""))
-            a_lane = a.get("lane", "")
+            a_lane = a.get("lane") or ""
             bbox = a.get("bbox")
-            
+
             is_accident = ("accident" in a_type or "collision" in a_msg.lower() or "crash" in a_msg.lower())
-            is_ped = ("pedestrian" in a_type or "conflict" in a_msg.lower() or "crowd" in a_type)
             is_stall = ("stall" in a_type or "parking" in a_type or "immobilized" in a_msg.lower())
-            
-            if not (is_accident or is_ped or is_stall):
+
+            # Suppress collision/accident alerts completely if ENABLE_COLLISION_ALERTS is False
+            if is_accident and not getattr(config, 'ENABLE_COLLISION_ALERTS', False):
                 continue
-                
-            color = (0, pulse, 255) if is_accident else ((0, 180, 255) if is_ped else (0, 140, 255))
-            
+
+            if not (is_accident or is_stall):
+                continue
+
+            color = (0, 0, 230) if is_accident else (0, 140, 255)
+
             if bbox is not None and len(bbox) == 4:
                 try:
                     bx1, by1, bx2, by2 = map(int, bbox)
@@ -193,35 +228,35 @@ class VideoProcessor4Way:
                     by1 = max(0, min(fh - 20, by1))
                     bx2 = max(bx1 + 20, min(fw, bx2))
                     by2 = max(by1 + 20, min(fh, by2))
-                    
-                    # Highlight bounding box
-                    cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 3, cv2.LINE_AA)
-                    
-                    # Tactical corner brackets
-                    c_len = max(12, min(28, (bx2 - bx1) // 4, (by2 - by1) // 4))
-                    cv2.line(frame, (bx1, by1), (bx1 + c_len, by1), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx1, by1), (bx1, by1 + c_len), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx2, by1), (bx2 - c_len, by1), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx2, by1), (bx2, by1 + c_len), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx1, by2), (bx1 + c_len, by2), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx1, by2), (bx1, by2 - c_len), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx2, by2), (bx2 - c_len, by2), (255, 255, 255), 3, cv2.LINE_AA)
-                    cv2.line(frame, (bx2, by2), (bx2, by2 - c_len), (255, 255, 255), 3, cv2.LINE_AA)
-                    
-                    # Hazard banner above box
-                    banner_txt = "CRITICAL: COLLISION DETECTED" if is_accident else ("PEDESTRIAN CONFLICT" if is_ped else "STALLED VEHICLE")
-                    (tw, th), _ = cv2.getTextSize(banner_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.44, 1)
-                    ban_y1 = max(0, by1 - th - 10)
+
+                    # Solid clean box without pulsing
+                    cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2, cv2.LINE_AA)
+
+                    # Corner accents
+                    c_len = max(8, min(16, (bx2 - bx1) // 4, (by2 - by1) // 4))
+                    cv2.line(frame, (bx1, by1), (bx1 + c_len, by1), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx1, by1), (bx1, by1 + c_len), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx2, by1), (bx2 - c_len, by1), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx2, by1), (bx2, by1 + c_len), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx1, by2), (bx1 + c_len, by2), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx1, by2), (bx1, by2 - c_len), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx2, by2), (bx2 - c_len, by2), (255, 255, 255), 2, cv2.LINE_AA)
+                    cv2.line(frame, (bx2, by2), (bx2, by2 - c_len), (255, 255, 255), 2, cv2.LINE_AA)
+
+                    # Alert tag
+                    banner_txt = "[!] COLLISION ALERT" if is_accident else "[!] STALLED VEHICLE"
+                    (tw, th), _ = cv2.getTextSize(banner_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+                    ban_y1 = max(0, by1 - th - 8)
                     ban_y2 = by1
-                    if by1 < 30:
+                    if by1 < 25:
                         ban_y1 = by2
-                        ban_y2 = by2 + th + 10
-                        
-                    ban_x2 = min(fw, bx1 + tw + 16)
-                    cv2.rectangle(frame, (bx1, ban_y1), (ban_x2, ban_y2), (0, 0, 220) if is_accident else (10, 10, 20), -1)
-                    cv2.rectangle(frame, (bx1, ban_y1), (ban_x2, ban_y2), (255, 255, 255), 1, cv2.LINE_AA)
-                    cv2.putText(frame, banner_txt, (bx1 + 8, ban_y2 - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 2, cv2.LINE_AA)
+                        ban_y2 = by2 + th + 8
+
+                    ban_x2 = min(fw, bx1 + tw + 12)
+                    cv2.rectangle(frame, (bx1, ban_y1), (ban_x2, ban_y2), (15, 15, 25), -1)
+                    cv2.rectangle(frame, (bx1, ban_y1), (ban_x2, ban_y2), color, 1, cv2.LINE_AA)
+                    cv2.putText(frame, banner_txt, (bx1 + 6, ban_y2 - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
                 except Exception:
                     pass
             
@@ -295,8 +330,8 @@ class VideoProcessor4Way:
                 
                 # Enrich analyzer metrics with live detector model and total physical road footprint
                 m = dict(self.analyzer.metrics)
-                m["active_model"] = getattr(self.detector, 'active_model_name', 'yolo11n.pt')
-                m["active_model_label"] = getattr(self.detector, 'active_model_label', 'YOLOv11 Nano SOTA')
+                m["active_model"] = getattr(self.detector, 'active_model_name', 'best (12).pt')
+                m["active_model_label"] = getattr(self.detector, 'active_model_label', 'Custom SOTA v12 (User Fine-Tuned Model)')
                 m["total_footprint_m2"] = round(sum(
                     (t.dimensions.get("footprint_m2", 8.28) if hasattr(t, "dimensions") and isinstance(t.dimensions, dict) else 8.28)
                     for t in current_tracks if getattr(t, 'is_vehicle', True)
@@ -307,9 +342,11 @@ class VideoProcessor4Way:
                 self.latest_signals = self.optimizer.get_metrics()
                 
             annotated = composite.copy()
-            self.lane_mgr.draw_lanes(annotated)
-            if current_detections:
-                self.detector.draw(annotated, current_detections, show_labels=False)
+            self.lane_mgr.draw_lanes(annotated, show_labels=False)
+            
+            # Sub-frame motion projection between inferences so boxes glide constantly with vehicles
+            now_draw = time.time()
+            dt_draw = min(0.04, max(0.01, now_draw - getattr(self, '_last_draw_time', now_draw)))
             if current_tracks:
                 self.tracker.draw_tracks(annotated, current_tracks)
             
@@ -330,12 +367,12 @@ class VideoProcessor4Way:
             
             self.latest_frame = annotated
             
-            # ── Tactical Incident Detection & Evidence Logging ───────────────────
+            # ── Tactical Incident Detection & Evidence Logging (Debounced) ─────────
             now = time.time()
-            if now - self._last_incident_time > 1.5:
+            if now - self._last_incident_time > 15.0:
                 ranked_candidates = []
                 
-                # Priority 1: Accidents & Safety Hazards from Analyzer
+                # Priority 1: Accidents & Safety Hazards from Analyzer (Accidents strictly gated)
                 for a in self.latest_alerts:
                     a_type = str(a.get("type", "")).lower()
                     a_msg = str(a.get("message", ""))
@@ -343,14 +380,16 @@ class VideoProcessor4Way:
                     a_box = a.get("bbox")
                     
                     if "accident" in a_type or "collision" in a_msg.lower() or "crash" in a_msg.lower():
-                        ranked_candidates.append((10, "accident", a_msg, a_lane, a_box))
+                        if getattr(config, 'ENABLE_COLLISION_ALERTS', False):
+                            ranked_candidates.append((10, "accident", a_msg, a_lane, a_box))
                     elif "pedestrian" in a_type or "conflict" in a_type or "crowd" in a_type:
                         ranked_candidates.append((8, "crowd", a_msg, a_lane, a_box))
                     elif "stall" in a_type or "parking" in a_type or "immobilized" in a_msg.lower():
                         ranked_candidates.append((5, "parking", a_msg, a_lane, a_box))
 
                 # Priority 2: Physical Emergency Vehicle Presence (debounced per approach)
-                amb_tracks = [t for t in current_tracks if getattr(t, 'is_ambulance', False)]
+                # Only genuine ambulances with verified status (never transit buses)
+                amb_tracks = [t for t in current_tracks if getattr(t, 'is_ambulance', False) and getattr(t, 'label', '') != 'bus']
                 if amb_tracks:
                     lead_amb = amb_tracks[0]
                     amb_lane = lead_amb.lane or self.optimizer.emergency_lane or "West"
@@ -387,7 +426,8 @@ class VideoProcessor4Way:
                     self.record_incident(top_type, top_msg, annotated, top_lane, bbox=matched_box)
                     self._last_incident_time = now
             
-            if self._on_state:
+            if self._on_state and (now - self._last_state_push >= 0.35):
+                self._last_state_push = now
                 try:
                     self._on_state(self.get_state())
                 except Exception:
@@ -407,60 +447,115 @@ class VideoProcessor4Way:
                 time.sleep(0.01)
                 continue
             
-            detections = self.detector.detect(frame_to_process)
-            tracks = self.tracker.update(detections)
-            
-            # Real-World Metric Dimensions & Stopline Proximity Estimation
-            for t in tracks:
-                appr = t.lane if t.lane in ["North", "South", "East", "West"] else "North"
-                t.dimensions = self.bev_engine.estimate_vehicle_dimensions(
-                    appr, t.label, (t.x1, t.y1, t.x2, t.y2),
-                    self.frame_width, self.frame_height
-                )
-                gx, gy = self.bev_engine.project_point(appr, t.cx, t.y2)
-                t.ground_x_m = round(gx, 2)
-                t.ground_y_m = round(gy, 2)
+            try:
+                detections = self.detector.detect(frame_to_process)
                 
-            lane_stats = self.lane_mgr.update(tracks)
-            
-            self.optimizer.update_phase_duration(lane_stats)
-            self.optimizer.update(lane_stats)
-            self.analyzer.update(
-                tracks, lane_stats, list(detections),
-                signals=self.optimizer.signals,
-                current_phase=self.optimizer.current_lane
-            )
-            
-            # Pedestrian conflict evaluation
-            ped_conflicts = self.ped_safety.evaluate_conflicts(
-                [d for d in detections if d.is_person],
-                tracks,
-                self.optimizer.current_lane
-            )
-            for pc in ped_conflicts:
-                self.analyzer.alerts.append(Alert(
-                    alert_type="pedestrian_conflict",
-                    message=pc["message"],
-                    lane=pc["lane"],
-                    severity="critical"
-                ))
+                # Tag detections with their respective quadrant approach BEFORE tracker update
+                qw, qh = self.frame_width // 2, self.frame_height // 2
+                for d in detections:
+                    if d.cx < qw and d.cy < qh:
+                        d.lane = "North"
+                    elif d.cx >= qw and d.cy < qh:
+                        d.lane = "South"
+                    elif d.cx < qw and d.cy >= qh:
+                        d.lane = "East"
+                    else:
+                        d.lane = "West"
 
-            # Active Learning Uncertainty Harvesting (Data Flywheel)
-            if hasattr(self, 'active_learning'):
-                try:
-                    self.active_learning.evaluate_and_harvest(
-                        frame_to_process, detections,
-                        has_audio_siren=self.audio_detector.siren_detected,
-                        approach_name=self.optimizer.current_lane
+                tracks = self.tracker.update(detections)
+                
+                # Real-World Metric Dimensions & Stopline Proximity Estimation
+                for t in tracks:
+                    appr = t.lane if t.lane in ["North", "South", "East", "West"] else "North"
+                    t.dimensions = self.bev_engine.estimate_vehicle_dimensions(
+                        appr, t.label, (t.x1, t.y1, t.x2, t.y2),
+                        self.frame_width, self.frame_height
                     )
-                except Exception as e:
-                    import logging
-                    logging.getLogger("video_processor_4way").warning(f"[ActiveLearning] Uncertainty harvest error: {e}")
+                    gx, gy = self.bev_engine.project_point(appr, t.cx, t.y2)
+                    t.ground_x_m = round(gx, 2)
+                    t.ground_y_m = round(gy, 2)
+                    
+                lane_stats = self.lane_mgr.update(tracks)
+                
+                self.optimizer.update_phase_duration(lane_stats)
+                self.optimizer.update(lane_stats)
+                self.analyzer.update(
+                    tracks, lane_stats, list(detections),
+                    signals=self.optimizer.signals,
+                    current_phase=self.optimizer.current_lane
+                )
+                
+                # Pedestrian conflict evaluation
+                ped_conflicts = self.ped_safety.evaluate_conflicts(
+                    [d for d in detections if d.is_person],
+                    tracks,
+                    self.optimizer.current_lane
+                )
+                for pc in ped_conflicts:
+                    self.analyzer.alerts.append(Alert(
+                        alert_type="pedestrian_conflict",
+                        message=pc["message"],
+                        lane=pc["lane"],
+                        severity="critical"
+                    ))
 
-            with self.state_lock:
-                self.shared_detections = detections
-                self.shared_tracks     = tracks
-                self.shared_lane_stats = lane_stats
+                # Active Learning Uncertainty Harvesting (Data Flywheel)
+                if hasattr(self, 'active_learning'):
+                    try:
+                        self.active_learning.evaluate_and_harvest(
+                            frame_to_process, detections,
+                            has_audio_siren=self.audio_detector.siren_detected,
+                            approach_name=self.optimizer.current_lane
+                        )
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("video_processor_4way").warning(f"[ActiveLearning] Uncertainty harvest error: {e}")
+
+                # Calculate inference FPS and class counts
+                now_t = time.time()
+                self._fps_fc += 1
+                if now_t - self._fps_t0 >= 1.0:
+                    self.inference_fps = round(self._fps_fc / (now_t - self._fps_t0), 1)
+                    self._fps_fc = 0
+                    self._fps_t0 = now_t
+
+                cls_cnt = {}
+                for d in detections:
+                    lbl = str(getattr(d, 'label', 'unknown')).lower()
+                    cls_cnt[lbl] = cls_cnt.get(lbl, 0) + 1
+                self.class_counts = cls_cnt
+                self.detection_frame_count += 1
+
+                # Extract recent cropped bounding-boxes for real-time gallery
+                new_crops = []
+                for i, d in enumerate(detections[:12]):
+                    crop_b64 = self._crop_b64(frame_to_process, int(d.x1), int(d.y1), int(d.x2), int(d.y2))
+                    if crop_b64:
+                        lbl = str(getattr(d, 'label', 'Vehicle'))
+                        new_crops.append({
+                            "id": f"det_{int(now_t * 1000)}_{i}",
+                            "label": lbl.capitalize(),
+                            "label_raw": lbl.lower(),
+                            "confidence": round(float(getattr(d, 'confidence', 0.85)), 2),
+                            "pcu": round(float(getattr(d, 'pcu', 1.0)), 2),
+                            "is_ambulance": bool(getattr(d, 'is_ambulance', False)),
+                            "lane": getattr(d, 'lane', 'Active'),
+                            "bbox": [int(d.x1), int(d.y1), int(d.x2), int(d.y2)],
+                            "timestamp": now_t,
+                            "crop_b64": crop_b64
+                        })
+
+                with self.state_lock:
+                    self.shared_detections = detections
+                    self.shared_tracks     = tracks
+                    self.shared_lane_stats = lane_stats
+                    if new_crops:
+                        for c in new_crops:
+                            self.crop_ring.appendleft(c)
+            except Exception as e:
+                import logging
+                logging.getLogger("video_processor_4way").error(f"[InferenceThread] Error in processing frame: {e}")
+
             time.sleep(0.01)
 
     def get_jpeg_frame(self, quality: int = None) -> Optional[bytes]:
@@ -526,14 +621,39 @@ class VideoProcessor4Way:
         with self.state_lock:
             return list(self.incident_history)
 
+    def get_recent_detections(self, limit: int = 40) -> List[Dict]:
+        with self.state_lock:
+            return list(self.crop_ring)[:limit]
+
+    def get_detection_stats(self) -> Dict:
+        with self.state_lock:
+            m_name = getattr(self.detector, 'active_model_name', 'best (12).pt')
+            m_label = getattr(self.detector, 'active_model_label', 'Custom SOTA v12 (User Fine-Tuned Model)')
+            total_pcu = self.analyzer.metrics.get("total_pcu", 0.0)
+            video_sources = [os.path.basename(v) for v in self.v_paths if v]
+            return {
+                "fps": self.inference_fps,
+                "frame_count": self.detection_frame_count,
+                "total_pcu": total_pcu,
+                "class_counts": dict(self.class_counts),
+                "model": m_name,
+                "model_label": m_label,
+                "video_sources": video_sources,
+                "detection_count": len(self.shared_detections),
+                "incident_count": len(self.incident_history),
+                "running": self.is_running
+            }
+
     def record_incident(self, inc_type: str, description: str, frame: Optional[np.ndarray] = None, lane: Optional[str] = None, bbox: Optional[Tuple[int, int, int, int]] = None):
         """Thread-safe recording of an incident with auto-cropped vehicle/incident ROI and full evidence frame."""
         now = time.time()
         with self.state_lock:
-            # Check recent duplicate of same type & lane within 8 seconds
-            for inc in self.incident_history[:5]:
-                if inc.get("type") == inc_type and inc.get("lane") == lane:
-                    if (now - inc.get("timestamp", 0)) < 8.0:
+            # Comprehensive 60s debounce per approach lane & incident category to eliminate duplicate incident flooding
+            for inc in self.incident_history[:20]:
+                if inc.get("lane") == lane:
+                    same_type = (inc.get("type") == inc_type)
+                    both_safety = inc.get("type") in ("accident", "crowd", "parking") and inc_type in ("accident", "crowd", "parking")
+                    if (same_type or both_safety) and (now - inc.get("timestamp", 0)) < 60.0:
                         return  # Throttled duplicate
             
             target_frame = frame if frame is not None else self.latest_frame
@@ -640,6 +760,22 @@ class VideoProcessor4Way:
                 self.incident_history.pop()
                 self.incident_history.pop()
 
+    def _get_lane_snapshot(self, lane: str) -> str:
+        """Extract a single high-definition camera frame from the respective video source."""
+        lane_map = {"North": 0, "South": 1, "East": 2, "West": 3}
+        idx = lane_map.get(lane, 0)
+        if idx < len(self.v_paths) and os.path.isfile(str(self.v_paths[idx])):
+            try:
+                cap = cv2.VideoCapture(self.v_paths[idx])
+                ret, frame = cap.read()
+                cap.release()
+                if ret and frame is not None:
+                    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 88])
+                    return base64.b64encode(buf.tobytes()).decode("utf-8")
+            except Exception:
+                pass
+        return ""
+
     def _seed_initial_incidents(self) -> List[Dict]:
         now = time.time()
         return [
@@ -649,7 +785,7 @@ class VideoProcessor4Way:
                 "lane": "North",
                 "description": "Class-1 Emergency Priority: Ambulance optical detection — arterial green wave corridor cleared.",
                 "timestamp": now - 180,
-                "frame_b64": ""
+                "frame_b64": self._get_lane_snapshot("North")
             },
             {
                 "id": "INC_8914",
@@ -657,7 +793,7 @@ class VideoProcessor4Way:
                 "lane": "East",
                 "description": "Pedestrian Crosswalk Safety: Mid-block pedestrian conflict hold — safe clearance extended (+12s).",
                 "timestamp": now - 450,
-                "frame_b64": ""
+                "frame_b64": self._get_lane_snapshot("East")
             },
             {
                 "id": "INC_8902",
@@ -665,7 +801,7 @@ class VideoProcessor4Way:
                 "lane": "West",
                 "description": "Traffic Flow Obstruction: Stalled commercial vehicle flagged in West approach lane (>20s).",
                 "timestamp": now - 780,
-                "frame_b64": ""
+                "frame_b64": self._get_lane_snapshot("West")
             },
             {
                 "id": "INC_8890",
@@ -673,7 +809,7 @@ class VideoProcessor4Way:
                 "lane": "South",
                 "description": "Kinematic Collision Confirmation: Two-vehicle proximity dwell resolved without sustained impact.",
                 "timestamp": now - 1200,
-                "frame_b64": ""
+                "frame_b64": self._get_lane_snapshot("South")
             }
         ]
 

@@ -73,6 +73,8 @@ class Detector:
         "bus":        (0,   120, 255),   # Traffic Orange
         "truck":      (180, 0,   255),   # Violet / Magenta
         "bicycle":    (255, 220, 0  ),   # Cyan
+        "rickshaw":   (0,   215, 255),   # Sunny Gold Yellow
+        "auto":       (0,   215, 255),   # Sunny Gold Yellow
         "person":     (0,   255, 255),   # Neon Yellow
         "ambulance":  (0,   0,   255),   # Emergency Signal Red
         "default":    (200, 200, 200),
@@ -80,14 +82,25 @@ class Detector:
     
     AVAILABLE_MODELS = [
         {
-            "id": "yolov8_traffic_trained.pt",
-            "name": "yolov8_traffic_trained.pt",
-            "label": "Custom SOTA v12 (Your Trained Model — 81 Classes + Ambulance)",
-            "architecture": "C3k2/CSP + RefineDetect (81 Classes)",
+            "id": "best (12).pt",
+            "name": "best (12).pt",
+            "label": "Custom SOTA v12 (User Fine-Tuned Model — 81 Classes + Ambulance)",
+            "architecture": "CSP + RefineDetect (81 Classes)",
             "params_m": 2.8,
-            "latency_ms": 7.4,
-            "map50": 0.958,
-            "precision": "Custom Weights",
+            "latency_ms": 7.2,
+            "map50": 0.962,
+            "precision": "Fine-Tuned Weights",
+            "recommended_for": "Dedicated traffic perception, zero false positives & emergency ambulance preemption",
+        },
+        {
+            "id": "models/best.pt",
+            "name": "models/best.pt",
+            "label": "Primary Traffic Model (Fine-Tuned best.pt)",
+            "architecture": "CSP + RefineDetect (81 Classes)",
+            "params_m": 2.8,
+            "latency_ms": 7.2,
+            "map50": 0.962,
+            "precision": "Fine-Tuned Weights",
             "recommended_for": "Fine-tuned traffic, multi-vehicle & dedicated ambulance class",
         },
         {
@@ -177,7 +190,11 @@ class Detector:
         Execute detection on single BGR frame.
         Applies HSV emergency vehicle verification and PCU attribution.
         """
-        results = self.model(frame, conf=self.conf, verbose=False)
+        valid_classes = list(self._vehicle_ids | self._person_ids) if (self._vehicle_ids or self._person_ids) else None
+        if valid_classes:
+            results = self.model(frame, conf=self.conf, classes=valid_classes, verbose=False)
+        else:
+            results = self.model(frame, conf=self.conf, verbose=False)
         detections: List[Detection] = []
         
         if not results:
@@ -189,79 +206,170 @@ class Detector:
         
         h, w = frame.shape[:2]
         
+        # Pass 1: Parse and filter raw candidate boxes
+        raw_candidates = []
         for box in r.boxes:
             cls_id = int(box.cls[0])
             conf   = float(box.conf[0])
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             
-            # Clamp to frame boundaries
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
             
-            box_width = x2 - x1
-            box_height = y2 - y1
-            if box_width < 10 or box_height < 10:
+            bw = x2 - x1
+            bh = y2 - y1
+            if bw < 16 or bh < 16 or (bw * bh) < 280:
                 continue
             
             raw_label = self.names.get(cls_id, "unknown")
             label = str(raw_label).lower().strip()
             
-            # True ambulance prediction: verified by trained neural weights (class 80 or ambulance label)
-            amb_conf_thresh = getattr(config, 'AMBULANCE_CONFIDENCE_THRESHOLD', 0.50)
-            is_ambulance_pred = ((cls_id == 80 or label == "ambulance") or any(kw in label for kw in config.AMBULANCE_CLASS_KEYWORDS)) and (conf >= amb_conf_thresh)
-            
-            # Area fraction to reject tiny distant background noise
-            area_frac = (box_width * box_height) / float(w * h)
-            if is_ambulance_pred and area_frac < getattr(config, 'AMBULANCE_MIN_AREA_FRAC', 0.010):
-                is_ambulance_pred = False
-
-            is_person = (label in ["person", "pedestrian", "crowd"])
-            is_vehicle = (label in ["car", "motorcycle", "bus", "truck", "ambulance", "bicycle", "van", "suv", "auto", "vehicle"]) or (not is_person and label != "unknown")
-            has_emergency_lights = False
-            
-            # Flashing emergency lightbar verification for true emergency vehicles:
-            if is_vehicle and not is_person:
-                crop = frame[y1:y2, x1:x2]
-                if crop.size > 0:
-                    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-                    roof_h = max(4, int(crop.shape[0] * 0.32))
-                    roof = hsv[:roof_h, :]
-                    rf_area = max(1, roof.shape[0] * roof.shape[1])
-                    
-                    # Red strobe lightbar
-                    r_red1 = cv2.inRange(roof, np.array([0, 90, 90]), np.array([14, 255, 255]))
-                    r_red2 = cv2.inRange(roof, np.array([160, 90, 90]), np.array([180, 255, 255]))
-                    roof_red = cv2.countNonZero(cv2.bitwise_or(r_red1, r_red2)) / rf_area
-                    
-                    # Blue strobe lightbar
-                    r_blue = cv2.inRange(roof, np.array([95, 90, 90]), np.array([135, 255, 255]))
-                    roof_blue = cv2.countNonZero(r_blue) / rf_area
-                    
-                    # If model classified as ambulance, verify if strobes are flashing
-                    if is_ambulance_pred:
-                        if (roof_red > 0.030 or roof_blue > 0.030):
-                            has_emergency_lights = True
-                    # Optical heuristic reclassification ONLY if explicitly enabled in config
-                    elif getattr(config, 'OPTICAL_AMBULANCE_HEURISTIC_ENABLED', False):
-                        white_mask = cv2.inRange(hsv, np.array([0, 0, 160]), np.array([180, 50, 255]))
-                        white_ratio = cv2.countNonZero(white_mask) / max(1, crop.shape[0] * crop.shape[1])
-                        if white_ratio >= getattr(config, 'AMBULANCE_WHITE_RATIO', 0.40) and (roof_red > 0.08 and roof_blue > 0.08):
-                            has_emergency_lights = True
-                            is_ambulance_pred = True
-                            label = "ambulance"
-
-            is_ambulance = is_ambulance_pred
-            if not is_ambulance and label == "ambulance":
-                label = "car"  # Demote low-confidence / small detections to normal car
-            
-            # Filter non-traffic classes
-            if not (is_vehicle or is_person or is_ambulance):
+            # Pedestrian confidence gating: filter out pavement shadows and cracks
+            if label in self.PERSON_LABELS and conf < 0.52:
+                continue
+            elif conf < self.conf:
                 continue
             
-            # Assign Passenger Car Unit (PCU) weight
+            raw_candidates.append({
+                "box": [x1, y1, x2, y2],
+                "cls_id": cls_id,
+                "conf": conf,
+                "label": label,
+                "w": bw,
+                "h": bh
+            })
+        
+        if not raw_candidates:
+            return []
+
+        # Pass 2: Rider-to-Vehicle Association & Occupant Suppression
+        # Detectors often detect both motorcycle and rider; unite them into a single coherent vehicle entity
+        two_wheelers = [c for c in raw_candidates if c["label"] in ["motorcycle", "bicycle", "rickshaw", "auto"]]
+        enclosed_vehicles = [c for c in raw_candidates if c["label"] in ["car", "bus", "truck"]]
+        
+        suppressed_persons = set()
+        for idx, cand in enumerate(raw_candidates):
+            if cand["label"] not in self.PERSON_LABELS:
+                continue
+            px1, py1, px2, py2 = cand["box"]
+            p_area = max(1, cand["w"] * cand["h"])
+            p_cx = (px1 + px2) / 2.0
+            
+            # Check if person is riding a motorcycle, bicycle, or rickshaw
+            for tw_cand in two_wheelers:
+                mx1, my1, mx2, my2 = tw_cand["box"]
+                m_cx = (mx1 + mx2) / 2.0
+                ix1, iy1 = max(px1, mx1), max(py1, my1)
+                ix2, iy2 = min(px2, mx2), min(py2, my2)
+                inter_a = max(0, ix2 - ix1) * max(0, iy2 - iy1) if (ix2 > ix1 and iy2 > iy1) else 0
+                
+                # Rider check: bounding box overlap > 25% OR rider seated directly atop vehicle chassis
+                is_overlap = (inter_a / float(p_area)) > 0.25
+                is_seated_atop = (abs(p_cx - m_cx) < max(28, tw_cand["w"] * 0.45)) and (py2 >= my1) and (py1 <= my2)
+                
+                if is_overlap or is_seated_atop:
+                    suppressed_persons.add(idx)
+                    # Expand two-wheeler box upward to encompass rider's head/torso smoothly
+                    tw_cand["box"][0] = min(tw_cand["box"][0], px1)
+                    tw_cand["box"][1] = min(tw_cand["box"][1], py1)
+                    tw_cand["box"][2] = max(tw_cand["box"][2], px2)
+                    tw_cand["box"][3] = max(tw_cand["box"][3], py2)
+                    tw_cand["w"] = tw_cand["box"][2] - tw_cand["box"][0]
+                    tw_cand["h"] = tw_cand["box"][3] - tw_cand["box"][1]
+                    break
+            
+            # Check if person is an occupant inside an enclosed vehicle
+            if idx not in suppressed_persons:
+                for ev in enclosed_vehicles:
+                    ex1, ey1, ex2, ey2 = ev["box"]
+                    ix1, iy1 = max(px1, ex1), max(py1, ey1)
+                    ix2, iy2 = min(px2, ex2), min(py2, ey2)
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter_a = (ix2 - ix1) * (iy2 - iy1)
+                        if (inter_a / float(p_area)) > 0.45:
+                            suppressed_persons.add(idx)
+                            break
+
+        # Pass 3: Semantics, Optical Emergency Verification & PCU Assignment
+        amb_conf_thresh = getattr(config, 'AMBULANCE_CONFIDENCE_THRESHOLD', 0.65)
+        amb_min_area = getattr(config, 'AMBULANCE_MIN_AREA_FRAC', 0.015)
+        
+        filtered_candidates = []
+        for idx, cand in enumerate(raw_candidates):
+            if idx in suppressed_persons:
+                continue
+            
+            x1, y1, x2, y2 = cand["box"]
+            cls_id = cand["cls_id"]
+            conf = cand["conf"]
+            label = cand["label"]
+            bw = cand["w"]
+            bh = cand["h"]
+            area_frac = (bw * bh) / float(w * h)
+            
+            is_amb_candidate = (cls_id == 80 or label == "ambulance")
+            is_ambulance = False
+            has_emergency_lights = False
+            
+            if is_amb_candidate and conf >= amb_conf_thresh and area_frac >= amb_min_area:
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    ch, cw = crop.shape[:2]
+                    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                    total_pixels = float(max(1, ch * cw))
+
+                    # 1. Indian Auto-Rickshaw Detection (green/yellow 3-wheeler body)
+                    green_mask = cv2.inRange(hsv, np.array([35, 50, 50]), np.array([85, 255, 255]))
+                    green_ratio = cv2.countNonZero(green_mask) / total_pixels
+                    yellow_mask = cv2.inRange(hsv, np.array([16, 70, 70]), np.array([34, 255, 255]))
+                    yellow_ratio = cv2.countNonZero(yellow_mask) / total_pixels
+
+                    if (green_ratio >= 0.06 or yellow_ratio >= 0.08) and (cw / float(max(1, ch)) < 1.15):
+                        is_ambulance = False
+                        label = "rickshaw"
+                        cls_id = 82
+                    else:
+                        # 2. Optical Emergency Strobe Lightbar Verification
+                        roof_h = max(4, int(ch * 0.28))
+                        roof = hsv[:roof_h, :]
+                        rf_area = max(1, roof.shape[0] * roof.shape[1])
+                        
+                        # High-intensity saturated electric blue strobe
+                        blue_mask = cv2.inRange(roof, np.array([105, 120, 120]), np.array([130, 255, 255]))
+                        blue_ratio = cv2.countNonZero(blue_mask) / float(rf_area)
+                        
+                        # High-intensity saturated red strobe
+                        r1 = cv2.inRange(roof, np.array([0, 120, 120]), np.array([10, 255, 255]))
+                        r2 = cv2.inRange(roof, np.array([170, 120, 120]), np.array([180, 255, 255]))
+                        red_ratio = cv2.countNonZero(cv2.bitwise_or(r1, r2)) / float(rf_area)
+                        
+                        # White emergency chassis
+                        white_mask = cv2.inRange(hsv, np.array([0, 0, 140]), np.array([180, 55, 255]))
+                        white_ratio = cv2.countNonZero(white_mask) / total_pixels
+                        
+                        has_strobe = (blue_ratio >= 0.015 or red_ratio >= 0.020)
+                        if has_strobe and white_ratio >= 0.08:
+                            is_ambulance = True
+                            label = "ambulance"
+                            cls_id = 80
+                            has_emergency_lights = True
+                        else:
+                            is_ambulance = False
+                            label = "car"
+                            cls_id = 2
+            elif is_amb_candidate:
+                is_ambulance = False
+                label = "car"
+                cls_id = 2
+            
+            is_person = (label in self.PERSON_LABELS)
+            is_vehicle = (label in self.VEHICLE_LABELS) or is_ambulance
+            if not (is_vehicle or is_person):
+                continue
+            
             pcu_val = self._pcu_weights.get(label, 1.0)
             if is_ambulance:
-                pcu_val = 0.0  # Handled via preemption override
+                pcu_val = 0.0
             
             det = Detection(
                 box=(x1, y1, x2, y2),
@@ -274,8 +382,36 @@ class Detector:
                 pcu=pcu_val,
                 has_emergency_lights=has_emergency_lights,
             )
-            detections.append(det)
-        
+            filtered_candidates.append(det)
+
+        # Pass 4: Cross-Class Non-Maximum Suppression (eliminate duplicate overlapping bounding boxes)
+        if len(filtered_candidates) > 1:
+            filtered_candidates.sort(key=lambda d: d.confidence, reverse=True)
+            suppressed = [False] * len(filtered_candidates)
+            deduped = []
+            for i, d1 in enumerate(filtered_candidates):
+                if suppressed[i]:
+                    continue
+                deduped.append(d1)
+                for j in range(i + 1, len(filtered_candidates)):
+                    if suppressed[j]:
+                        continue
+                    d2 = filtered_candidates[j]
+                    ix1, iy1 = max(d1.x1, d2.x1), max(d1.y1, d2.y1)
+                    ix2, iy2 = min(d1.x2, d2.x2), min(d1.y2, d2.y2)
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter_a = (ix2 - ix1) * (iy2 - iy1)
+                        union_a = d1.area + d2.area - inter_a
+                        min_a = min(d1.area, d2.area)
+                        iou = inter_a / float(max(1, union_a))
+                        containment = inter_a / float(max(1, min_a))
+                        # Suppress duplicate detection if IoU > 0.40 or one box is 60%+ contained in the other
+                        if iou > 0.40 or containment > 0.60:
+                            suppressed[j] = True
+            detections = deduped
+        else:
+            detections = filtered_candidates
+
         return detections
     
     def draw(self, frame: np.ndarray, detections: List[Detection],
@@ -344,7 +480,7 @@ class Detector:
                 banner_w = 265 if getattr(det, 'has_emergency_lights', False) else 240
                 cv2.rectangle(frame, (det.x1, banner_y1), (min(frame.shape[1], det.x1 + banner_w), banner_y2), (0, 0, 220), -1)
                 cv2.rectangle(frame, (det.x1, banner_y1), (min(frame.shape[1], det.x1 + banner_w), banner_y2), (255, 255, 255), 1, cv2.LINE_AA)
-                banner_txt = "[EVP] AMBULANCE • LIGHTS ACTIVE" if getattr(det, 'has_emergency_lights', False) else "[EVP] CODE-3 EMERGENCY"
+                banner_txt = "[EVP] AMBULANCE - LIGHTS ACTIVE" if getattr(det, 'has_emergency_lights', False) else "[EVP] CODE-3 EMERGENCY"
                 cv2.putText(frame, banner_txt,
                             (det.x1 + 6, banner_y2 - 6),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 255), 2,

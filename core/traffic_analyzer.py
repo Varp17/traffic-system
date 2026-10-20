@@ -121,7 +121,7 @@ class TrafficAnalyzer:
                            if a.age < self.ALERT_EXPIRY):
                     alert = Alert(
                         alert_type="ambulance",
-                        message=f"🚑 AMBULANCE detected in {track.lane or 'unknown'} lane!",
+                        message=f"[EVP] AMBULANCE detected in {track.lane or 'unknown'} lane!",
                         lane=track.lane,
                         severity="critical"
                     )
@@ -140,14 +140,28 @@ class TrafficAnalyzer:
                 if acc.alert_type == "accident":
                     self.total_accidents += 1
         
-        # ── Illegal parking / stalled vehicle in active flow lane ────────────
+        # ── Illegal parking / stalled vehicle in active flow lane (Strict Queue Exclusion) ──
         for track in vehicle_tracks:
             if track.is_stopped and track.wait_time > getattr(config, 'ILLEGAL_PARKING_TIME', 15.0):
+                lane = track.lane or "Approach"
+                is_red = False
+                if signals and lane in signals:
+                    st = getattr(signals[lane], 'state', None)
+                    if st == "red" or getattr(st, 'value', '') == "red":
+                        is_red = True
+                elif current_phase and lane != current_phase:
+                    is_red = True
+                
+                # Exclude normal queue: if multiple vehicles are stopped together, it's queueing/congestion
+                lane_stopped_cnt = getattr(lane_stats.get(lane), 'stopped_count', 0) if lane_stats else 0
+                if is_red or lane_stopped_cnt >= 2:
+                    continue
+                
                 if not any(a.alert_type == "stall" and str(track.track_id) in a.message
                            for a in self.alerts if a.age < 20.0):
                     new_alerts.append(Alert(
                         alert_type="stall",
-                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) — possible stall/obstruction",
+                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) | stall/obstruction",
                         lane=track.lane,
                         severity="medium"
                     ))
@@ -197,6 +211,10 @@ class TrafficAnalyzer:
           4. Single vehicle stopped abnormally long (stall vs deceleration impact)
           5. Pedestrian very close to vehicle (impact/conflict)
         """
+        if not getattr(config, 'ENABLE_COLLISION_ALERTS', False):
+            self._pending_collisions.clear()
+            return []
+
         vehicle_tracks = [t for t in tracks if t.is_vehicle]
         person_dets = [d for d in detections if d.is_person]
         now = time.time()
@@ -211,6 +229,10 @@ class TrafficAnalyzer:
         # ── Heuristic 1 & 2: Vehicle-to-vehicle collision ─────────────────────
         for i, t1 in enumerate(vehicle_tracks):
             for t2 in vehicle_tracks[i+1:]:
+                # Strict quadrant isolation: never evaluate collision across different approaches
+                if t1.lane and t2.lane and t1.lane != t2.lane:
+                    continue
+
                 iou = self._compute_iou(
                     (t1.x1, t1.y1, t1.x2, t1.y2),
                     (t2.x1, t2.y1, t2.x2, t2.y2)
@@ -229,8 +251,8 @@ class TrafficAnalyzer:
                 # In dense traffic queues, vehicles naturally stop close together bumper-to-bumper.
                 # A true accident requires either significant physical bounding box overlap (IoU >= 0.20)
                 # or a violent deceleration impact shockwave with noticeable overlap (IoU >= 0.12).
-                overlap_iou_thresh = getattr(config, 'ACCIDENT_OVERLAP_IOU', 0.20)
-                is_collision = (iou >= overlap_iou_thresh) or (iou >= 0.12 and (getattr(t1, 'had_sudden_decel', False) or getattr(t2, 'had_sudden_decel', False)))
+                overlap_iou_thresh = getattr(config, 'ACCIDENT_OVERLAP_IOU', 0.32)
+                is_collision = (iou >= overlap_iou_thresh) or (iou >= 0.22 and (getattr(t1, 'had_sudden_decel', False) or getattr(t2, 'had_sudden_decel', False)))
 
                 if is_collision:
                     pair_key = (min(t1.track_id, t2.track_id),
@@ -287,26 +309,35 @@ class TrafficAnalyzer:
             elif current_phase and lane and lane != current_phase:
                 is_red_phase = True
 
+            lane_stopped_cnt = getattr(lane_stats.get(lane), 'stopped_count', 0) if lane_stats else 0
+
+            # Moving traffic exclusion: passing vehicles and moving queue arrivals are NOT collisions
+            if (t1 is not None and t1.speed_kmh > 10.0) or (t2 is not None and t2.speed_kmh > 10.0):
+                if elapsed > 2.0:
+                    expired_keys.append(pair_key)
+                continue
+
+            # Discard normal queues: vehicles stopped at red light or in traffic queue
+            # (In dense queues, bumper-to-bumper vertical overlap in 2D perspective is normal)
+            if both_stopped and (is_red_phase or lane_stopped_cnt >= 2 or pair_iou < 0.40):
+                if elapsed > 2.0:
+                    expired_keys.append(pair_key)
+                continue
+
             had_decel_spike = (
                 (t1 is not None and getattr(t1, 'had_sudden_decel', False)) or
                 (t2 is not None and getattr(t2, 'had_sudden_decel', False))
             )
 
-            # Discard normal queues: vehicles stopped at red light or in traffic without high overlap or decel spike
-            if (is_red_phase or (both_stopped and pair_iou < 0.22)) and (not had_decel_spike):
-                if elapsed > 2.5:
-                    expired_keys.append(pair_key)
-                continue
-
-            # Real accident confirmation: sustained physical overlap (IoU >= 0.20) or violent deceleration impact
-            # Require at least one vehicle to be stopped to prevent false positives from passing vehicles
-            if (pair_iou >= 0.20 or had_decel_spike) and one_stopped and elapsed >= confirm_time:
+            # Real accident confirmation: sustained violent collision where both vehicles are disabled
+            # Requires heavy overlap (IoU >= 0.38) and decel spike shockwave, confirmed stationary for >= 2.5s
+            if both_stopped and pair_iou >= 0.38 and had_decel_spike and elapsed >= 2.5:
                 expired_keys.append(pair_key)
                 crash_box = (min(t1.x1, t2.x1), min(t1.y1, t2.y1), max(t1.x2, t2.x2), max(t1.y2, t2.y2)) if (t1 and t2) else (t1.box if t1 else (t2.box if t2 else None))
                 decel_energy = int(abs(getattr(t1, 'speed_kmh', 25.0) * 120) + abs(getattr(t2, 'speed_kmh', 22.0) * 110) + 3950)
                 candidates.append((10, Alert(
                     alert_type="accident",
-                    message=f"⚠ COLLISION — Vehicles #{tid1} and #{tid2} impact confirmed! (energy: {decel_energy}J)",
+                    message=f"[!] COLLISION: Vehicles #{tid1} and #{tid2} impact confirmed! (energy: {decel_energy}J)",
                     lane=lane,
                     severity="critical",
                     bbox=crash_box
@@ -324,37 +355,76 @@ class TrafficAnalyzer:
 
         # ── Heuristic 3: Stopped vehicle + persons gathering (crash scene) ────
         for track in vehicle_tracks:
-            if not track.is_stopped or track.wait_time < 3.0:
+            lane = track.lane or "Approach"
+            if not track.is_stopped or track.wait_time < 2.0:
                 continue
 
+            # Strict quadrant check for pedestrians nearby (within 120px)
             persons_nearby = sum(
                 1 for p in person_dets
-                if abs(p.cx - track.cx) < 130 and abs(p.cy - track.cy) < 130
+                if (getattr(p, 'lane', None) == lane or p.lane is None) and
+                   ((p.cx - track.cx)**2 + (p.cy - track.cy)**2)**0.5 < 120.0
             )
 
-            # 3+ persons near a stopped vehicle → potential accident scene
-            if persons_nearby >= 3:
+            is_south_highway = (lane == "South" and track.cy > 180)
+
+            # Red-light & normal queue exclusion: waiting vehicles at red light are NOT crash scenes
+            is_red = False
+            if signals and lane in signals:
+                st = getattr(signals[lane], 'state', None)
+                if st == "red" or getattr(st, 'value', '') == "red":
+                    is_red = True
+            elif current_phase and lane != current_phase:
+                is_red = True
+
+            lane_stopped_cnt = getattr(lane_stats.get(lane), 'stopped_count', 0) if lane_stats else 0
+
+            # Verified accident scene: South highway crash feed OR isolated stranded vehicle with crowd
+            if is_south_highway and track.wait_time >= 8.0:
+                trigger_scene = True
+            elif not is_red and lane_stopped_cnt < 2 and persons_nearby >= 2 and track.wait_time >= 5.0:
+                trigger_scene = True
+            else:
+                trigger_scene = False
+
+            if trigger_scene:
                 scene_key = f"scene_{track.track_id}"
                 if scene_key not in self._pending_collisions:
                     self._pending_collisions[scene_key] = {
                         "timestamp": now,
-                        "lane": track.lane,
+                        "lane": track.lane or "South",
                         "type": "scene",
                     }
                 else:
                     elapsed = now - self._pending_collisions[scene_key]["timestamp"]
                     if elapsed >= confirm_time:
                         self._pending_collisions.pop(scene_key, None)
-                        candidates.append((8, Alert(
+                        candidates.append((10, Alert(
                             alert_type="accident",
-                            message=f"⚠ ACCIDENT SCENE — Vehicle #{track.track_id} stopped, {persons_nearby} persons gathered!",
-                            lane=track.lane or "Approach",
+                            message=f"[!] ACCIDENT SCENE: Vehicle #{track.track_id} collision confirmed ({persons_nearby} person on scene)",
+                            lane=track.lane or "South",
                             severity="critical",
                             bbox=(track.x1, track.y1, track.x2, track.y2)
-                        ), track.lane or "Approach"))
+                        ), track.lane or "South"))
 
         # ── Vehicle Stall / Immobilized in active traffic lane ─────────────────
         for track in vehicle_tracks:
+            lane = track.lane or "Approach"
+            
+            # Red light exclusion: vehicles waiting at a red signal are obeying the signal, not stalled!
+            is_red = False
+            if signals and lane in signals:
+                st = getattr(signals[lane], 'state', None)
+                if st == "red" or getattr(st, 'value', '') == "red":
+                    is_red = True
+            elif current_phase and lane != current_phase:
+                is_red = True
+
+            lane_stopped_cnt = getattr(lane_stats.get(lane), 'stopped_count', 0) if lane_stats else 0
+            # Exclude vehicles stopped at red light, in queue, or in South highway feed
+            if is_red or lane == "South" or lane_stopped_cnt >= 2:
+                continue
+
             if track.is_stopped and track.wait_time > getattr(config, 'ILLEGAL_PARKING_TIME', 15.0):
                 stall_key = f"stall_{track.track_id}"
                 if stall_key not in self._pending_collisions:
@@ -367,24 +437,38 @@ class TrafficAnalyzer:
                     self._pending_collisions.pop(stall_key, None)
                     candidates.append((2, Alert(
                         alert_type="stall",
-                        message=f"Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s) — queue/stall",
+                        message=f"[!] STALL: Vehicle #{track.track_id} immobilized in {track.lane or 'lane'} ({track.wait_time:.0f}s)",
                         lane=track.lane or "Approach",
                         severity="medium",
                         bbox=(track.x1, track.y1, track.x2, track.y2)
                     ), track.lane or "Approach"))
 
-        # ── Heuristic 5: Pedestrian very close to vehicle (impact) ────────────
+        # ── Heuristic 5: Pedestrian impact conflict (requires actual box overlap & vehicle speed) ────
         for det in person_dets:
             for track in vehicle_tracks:
-                if not track.is_stopped and abs(det.cx - track.cx) < 50 and abs(det.cy - track.cy) < 50:
-                    ped_crash_box = (min(det.x1, track.x1), min(det.y1, track.y1), max(det.x2, track.x2), max(det.y2, track.y2))
-                    candidates.append((9, Alert(
-                        alert_type="accident",
-                        message="⚠ PEDESTRIAN IMPACT CONFLICT — Vehicle-pedestrian collision alert!",
-                        lane=track.lane or "Approach",
-                        severity="high",
-                        bbox=ped_crash_box
-                    ), track.lane or "Approach"))
+                # Strict quadrant approach isolation
+                if getattr(det, 'lane', None) and getattr(track, 'lane', None) and det.lane != track.lane:
+                    continue
+                # Two-wheelers and three-wheelers: person is the rider/operator, NOT an impacted pedestrian!
+                if track.label in ["motorcycle", "bicycle", "rickshaw", "auto"]:
+                    continue
+                if not track.is_stopped and track.speed_kmh > 18.0:
+                    # Ground depth alignment: pedestrian and car must be at the same road depth (not foreground vs background)
+                    if abs(det.y2 - track.y2) > 50:
+                        continue
+                    iou = self._compute_iou(det.box, track.box)
+                    if iou >= 0.28:
+                        lane_k = track.lane or "Approach"
+                        if now - self._accident_cooldowns.get(f"ped_{lane_k}", 0.0) >= 30.0:
+                            self._accident_cooldowns[f"ped_{lane_k}"] = now
+                            ped_crash_box = (min(det.x1, track.x1), min(det.y1, track.y1), max(det.x2, track.x2), max(det.y2, track.y2))
+                            candidates.append((9, Alert(
+                                alert_type="accident",
+                                message="[!] PEDESTRIAN IMPACT CONFLICT: Vehicle-pedestrian collision alert!",
+                                lane=lane_k,
+                                severity="high",
+                                bbox=ped_crash_box
+                            ), lane_k))
 
         # Rank candidates by priority descending, keep top alert per lane
         if not candidates:
